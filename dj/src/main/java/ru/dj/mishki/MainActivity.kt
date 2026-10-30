@@ -9,7 +9,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,63 +22,101 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 
 private data class Track(val title: String, val uri: Uri)
+private class Deck {
+    var player: MediaPlayer? = null
+    var trackIndex: Int = -1
+    var playing: Boolean = false
+    fun release() { runCatching { player?.stop(); player?.release() }; player = null; playing = false; trackIndex = -1 }
+}
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent { DjMishkiApp() }
-    }
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContent { DjMishkiApp() } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DjMishkiApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("dj_mishki", 0) }
     val tracks = remember { mutableStateListOf<Track>() }
-    var current by remember { mutableIntStateOf(-1) }
-    var playing by remember { mutableStateOf(false) }
+    val effects = remember { mutableStateListOf<Track>() }
     var section by remember { mutableStateOf("Пульт") }
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
-    var volume by remember { mutableFloatStateOf(0.8f) }
-    val tones = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+    var selected by remember { mutableIntStateOf(-1) }
+    var cross by remember { mutableFloatStateOf(0f) }
+    var master by remember { mutableFloatStateOf(0.85f) }
+    var tick by remember { mutableIntStateOf(0) }
+    var message by remember { mutableStateOf("Добавь музыку с телефона") }
+    val deckA = remember { Deck() }
+    val deckB = remember { Deck() }
+    val tone = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 90) }
+    val musicPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { uri ->
             runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                if (it.moveToFirst()) it.getString(0) else null
-            } ?: "Музыкальный файл"
+            val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "Музыкальный файл"
             if (tracks.none { it.uri == uri }) tracks.add(Track(name, uri))
         }
+        prefs.edit().putString("tracks", tracks.joinToString("|") { it.uri.toString() }).apply()
+        message = if (tracks.isEmpty()) "Добавь музыку с телефона" else "Добавлено песен: ${tracks.size}"
     }
-    fun stop() { player?.runCatching { stop(); release() }; player = null; playing = false }
-    fun play(index: Int) {
+    val effectPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        uris.forEach { uri ->
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "Звуковой эффект"
+            if (effects.none { it.uri == uri }) effects.add(Track(name, uri))
+        }
+    }
+    fun applyMix() {
+        val a = master * (1f - cross)
+        val b = master * cross
+        runCatching { deckA.player?.setVolume(a, a) }
+        runCatching { deckB.player?.setVolume(b, b) }
+    }
+    fun loadDeck(deck: Deck, index: Int) {
         if (index !in tracks.indices) return
-        stop()
-        current = index
+        deck.release()
         runCatching {
-            player = MediaPlayer().apply {
+            deck.trackIndex = index
+            deck.player = MediaPlayer().apply {
                 setDataSource(context, tracks[index].uri)
-                setOnCompletionListener {
-                    if (current + 1 < tracks.size) play(current + 1) else playing = false
-                }
+                setOnCompletionListener { deck.playing = false }
                 prepare()
-                setVolume(volume, volume)
                 start()
             }
-            playing = true
-        }.onFailure { playing = false }
+            deck.playing = true
+            applyMix()
+            message = "Загружено: ${tracks[index].title}"
+        }.onFailure { deck.release(); message = "Не удалось открыть файл. Попробуй другой формат." }
     }
-    DisposableEffect(Unit) { onDispose { stop(); tones.release() } }
-    val bg = Color(0xFF10121A)
-    val panel = Color(0xFF1C2030)
-    val neon = Color(0xFF55E6A5)
+    fun stopAll() { deckA.release(); deckB.release(); message = "Воспроизведение остановлено" }
+    fun playEffect(track: Track) {
+        runCatching {
+            val p = MediaPlayer()
+            p.setDataSource(context, track.uri)
+            p.setOnCompletionListener { it.release() }
+            p.prepare()
+            p.start()
+        }.onFailure { message = "Не удалось воспроизвести эффект" }
+    }
+    LaunchedEffect(Unit) {
+        prefs.getString("tracks", null)?.split("|")?.filter { it.isNotBlank() }?.forEach { raw ->
+            runCatching {
+                val uri = Uri.parse(raw)
+                val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "Музыкальный файл"
+                tracks.add(Track(name, uri))
+            }
+        }
+        while (true) { delay(500); tick++ }
+    }
+    DisposableEffect(Unit) { onDispose { deckA.release(); deckB.release(); tone.release() } }
+    val bg = Color(0xFF10121A); val panel = Color(0xFF1C2030); val neon = Color(0xFF55E6A5)
     MaterialTheme(colorScheme = darkColorScheme(primary = neon, background = bg, surface = panel)) {
         Scaffold(containerColor = bg, topBar = {
             TopAppBar(title = { Column {
                 Text("DJ MISHKI", fontWeight = FontWeight.Black, color = neon, letterSpacing = 2.sp)
-                Text("Виртуальный диджей мероприятий", fontSize = 11.sp, color = Color.LightGray)
+                Text("Пульт управления мероприятием", fontSize = 11.sp, color = Color.LightGray)
             } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = bg))
         }, bottomBar = {
             NavigationBar(containerColor = panel) {
@@ -88,78 +125,124 @@ private fun DjMishkiApp() {
                 }
             }
         }) { pad ->
-            Column(Modifier.fillMaxSize().padding(pad).padding(16.dp)) {
+            Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 14.dp, vertical = 10.dp)) {
                 when(section) {
                     "Пульт" -> {
-                        Card(colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(24.dp)) {
-                            Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("СЕЙЧАС ИГРАЕТ", color = neon, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Spacer(Modifier.height(12.dp))
-                                Text(tracks.getOrNull(current)?.title ?: "Выбери музыку", fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                                Spacer(Modifier.height(24.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    FilledTonalButton(onClick = { if (current > 0) play(current - 1) }, enabled = current > 0) { Text("⏮") }
-                                    Button(onClick = {
-                                        if (playing) { player?.pause(); playing = false }
-                                        else if (current >= 0 && player != null) { player?.start(); playing = true }
-                                        else if (tracks.isNotEmpty()) play(if (current >= 0) current else 0)
-                                        else picker.launch(arrayOf("audio/*"))
-                                    }, modifier = Modifier.size(76.dp), shape = RoundedCornerShape(24.dp)) { Text(if (playing) "Ⅱ" else "▶", fontSize = 26.sp) }
-                                    FilledTonalButton(onClick = { if (current + 1 < tracks.size) play(current + 1) }, enabled = current + 1 < tracks.size) { Text("⏭") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            listOf("A" to deckA, "B" to deckB).forEach { (label, deck) ->
+                                Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(18.dp)) {
+                                    Column(Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("ПЛЕЕР $label", color = neon, fontWeight = FontWeight.Bold)
+                                        Text(tracks.getOrNull(deck.trackIndex)?.title ?: "Не загружен", maxLines = 2, minLines = 2, fontSize = 13.sp)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            FilledTonalButton(onClick = { if (deck.trackIndex >= 0) { if (deck.playing) { deck.player?.pause(); deck.playing = false } else { deck.player?.start(); deck.playing = true } } else if (selected >= 0) loadDeck(deck, selected) }, enabled = deck.trackIndex >= 0 || selected >= 0) { Text(if (deck.playing) "Пауза" else "Старт") }
+                                            FilledTonalButton(onClick = { deck.release(); message = "Плеер $label очищен" }) { Text("Стоп") }
+                                        }
+                                        TextButton(onClick = { if (selected >= 0) loadDeck(deck, selected) }, enabled = selected >= 0) { Text("Загрузить выбор") }
+                                    }
                                 }
-                                Spacer(Modifier.height(20.dp))
-                                Text("Громкость", color = Color.LightGray)
-                                Slider(value = volume, onValueChange = { volume = it; player?.setVolume(it,it) })
                             }
                         }
                         Spacer(Modifier.height(14.dp))
-                        Button(onClick = { picker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ ДОБАВИТЬ МУЗЫКУ С ТЕЛЕФОНА") }
+                        Card(colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(20.dp)) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("КРОССФЕЙДЕР", color = neon, fontWeight = FontWeight.Bold)
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Плеер A", fontSize = 12.sp); Text("Плеер B", fontSize = 12.sp) }
+                                Slider(value = cross, onValueChange = { cross = it; applyMix() })
+                                Text("Общая громкость", color = Color.LightGray, fontSize = 12.sp)
+                                Slider(value = master, onValueChange = { master = it; applyMix() })
+                                Text(message, color = Color.LightGray, fontSize = 12.sp)
+                            }
+                        }
                         Spacer(Modifier.height(10.dp))
-                        Text("Быстрые действия", color = Color.White, fontWeight = FontWeight.Bold)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { stop() }, modifier = Modifier.weight(1f)) { Text("СТОП") }
-                            OutlinedButton(onClick = { tones.startTone(ToneGenerator.TONE_PROP_BEEP, 350) }, modifier = Modifier.weight(1f)) { Text("СИГНАЛ") }
-                            OutlinedButton(onClick = { tones.startTone(ToneGenerator.TONE_PROP_ACK, 350) }, modifier = Modifier.weight(1f)) { Text("ГОТОВО") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { musicPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.weight(1f)) { Text("＋ Музыка") }
+                            OutlinedButton(onClick = { stopAll() }, modifier = Modifier.weight(1f)) { Text("Остановить всё") }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text("Выбери песню для загрузки в плеер A или B", color = Color.LightGray, fontSize = 12.sp)
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            itemsIndexed(tracks) { index, track ->
+                                Card(colors = CardDefaults.cardColors(containerColor = if (selected == index) Color(0xFF293C3A) else panel), modifier = Modifier.fillMaxWidth().clickable { selected = index }) {
+                                    Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(if (selected == index) "●" else "♫", color = neon)
+                                        Spacer(Modifier.width(10.dp))
+                                        Text(track.title, Modifier.weight(1f), maxLines = 1, fontSize = 13.sp)
+                                        TextButton(onClick = { loadDeck(deckA, index) }) { Text("A") }
+                                        TextButton(onClick = { loadDeck(deckB, index) }) { Text("B") }
+                                    }
+                                }
+                            }
                         }
                     }
                     "Музыка" -> {
-                        Button(onClick = { picker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить песни") }
-                        Spacer(Modifier.height(12.dp))
-                        if (tracks.isEmpty()) Text("Здесь появятся песни, которые ты добавишь с телефона.", color = Color.LightGray)
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            itemsIndexed(tracks) { index, track ->
-                                Card(colors = CardDefaults.cardColors(containerColor = panel), modifier = Modifier.fillMaxWidth().clickable { play(index) }) {
-                                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Text(if (index == current) "▶  " else "♫  ", color = neon)
-                                        Text(track.title, modifier = Modifier.weight(1f), maxLines = 2)
-                                        TextButton(onClick = { tracks.removeAt(index); if (index == current) stop(); if (index < current) current-- }) { Text("Убрать") }
+                        Button(onClick = { musicPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить песни с телефона") }
+                        Spacer(Modifier.height(8.dp))
+                        Text("Песен в библиотеке: ${tracks.size}", color = neon)
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            itemsIndexed(tracks) { i, t ->
+                                Card(colors = CardDefaults.cardColors(containerColor = panel)) {
+                                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(t.title, Modifier.weight(1f), maxLines = 2)
+                                        TextButton(onClick = { selected = i; loadDeck(deckA, i) }) { Text("В A") }
+                                        TextButton(onClick = { selected = i; loadDeck(deckB, i) }) { Text("В B") }
+                                        TextButton(onClick = { tracks.removeAt(i); prefs.edit().putString("tracks", tracks.joinToString("|") { it.uri.toString() }).apply(); if (deckA.trackIndex == i) deckA.release(); if (deckB.trackIndex == i) deckB.release() }) { Text("Удалить") }
                                     }
                                 }
                             }
                         }
                     }
                     "Эффекты" -> {
-                        Text("ЗВУКОВЫЕ ЭФФЕКТЫ", color = neon, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(12.dp))
-                        val effects = listOf("Фанфары" to ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, "Аплодисменты" to ToneGenerator.TONE_PROP_ACK, "Барабанная дробь" to ToneGenerator.TONE_CDMA_NETWORK_BUSY, "Сигнал старта" to ToneGenerator.TONE_PROP_BEEP, "Внимание" to ToneGenerator.TONE_PROP_PROMPT, "Победа" to ToneGenerator.TONE_CDMA_ALERT_INCALL_LITE)
-                        effects.chunked(2).forEach { row ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                                row.forEach { (name, tone) ->
-                                    Button(onClick = { tones.startTone(tone, 700) }, modifier = Modifier.weight(1f).height(76.dp), shape = RoundedCornerShape(16.dp)) { Text(name) }
-                                }
+                        Text("ЗВУКОВАЯ ПАНЕЛЬ", color = neon, fontWeight = FontWeight.Bold)
+                        Text("Встроенные сигналы", color = Color.LightGray, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        val built = listOf("Старт" to ToneGenerator.TONE_PROP_BEEP, "Внимание" to ToneGenerator.TONE_PROP_PROMPT, "Подтверждение" to ToneGenerator.TONE_PROP_ACK, "Сигнал" to ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, "Оповещение" to ToneGenerator.TONE_CDMA_NETWORK_BUSY, "Победа" to ToneGenerator.TONE_CDMA_ALERT_INCALL_LITE)
+                        built.chunked(2).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                row.forEach { (title, id) -> Button(onClick = { tone.startTone(id, 650) }, modifier = Modifier.weight(1f).height(62.dp)) { Text(title) } }
                                 if (row.size == 1) Spacer(Modifier.weight(1f))
                             }
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(6.dp))
                         }
-                        Text("Это встроенные сигналы-подсказки. Позже сюда можно добавить собственные аудиофайлы эффектов.", color = Color.LightGray, fontSize = 12.sp)
+                        Button(onClick = { effectPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить свои звуковые эффекты") }
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            itemsIndexed(effects) { i, effect ->
+                                Card(colors = CardDefaults.cardColors(containerColor = panel)) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(effect.title, Modifier.weight(1f))
+                                        Button(onClick = { playEffect(effect) }) { Text("▶ Играть") }
+                                        TextButton(onClick = { effects.removeAt(i) }) { Text("Убрать") }
+                                    }
+                                }
+                            }
+                        }
                     }
                     else -> {
                         Text("ИГРЫ И ИНТЕРАКТИВЫ", color = neon, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(12.dp))
-                        Text("Музыкальные конкурсы появятся в следующем этапе.", color = Color.LightGray)
-                        listOf("Угадай мелодию", "Музыкальная пауза", "Танцевальный батл", "Замри под музыку").forEach {
-                            Card(colors = CardDefaults.cardColors(containerColor = panel), modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-                                Text(it, Modifier.padding(16.dp), fontWeight = FontWeight.SemiBold)
+                        Text("Выбери конкурс — приложение запустит таймер и поможет вести раунд.", color = Color.LightGray, fontSize = 12.sp)
+                        var seconds by remember { mutableIntStateOf(15) }
+                        var remaining by remember { mutableIntStateOf(15) }
+                        var running by remember { mutableStateOf(false) }
+                        LaunchedEffect(running, tick) { if (running && tick % 2 == 0 && remaining > 0) remaining--; if (remaining == 0) running = false }
+                        Card(colors = CardDefaults.cardColors(containerColor = panel), modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("ТАЙМЕР КОНКУРСА", color = neon, fontWeight = FontWeight.Bold)
+                                Text("$remaining сек.", fontSize = 38.sp, fontWeight = FontWeight.Black)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TextButton(onClick = { seconds = (seconds - 5).coerceAtLeast(5); remaining = seconds }) { Text("−5") }
+                                    Text("$seconds секунд")
+                                    TextButton(onClick = { seconds = (seconds + 5).coerceAtMost(120); remaining = seconds }) { Text("+5") }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = { if (remaining == 0) remaining = seconds; running = true }) { Text("Старт") }
+                                    OutlinedButton(onClick = { running = false; remaining = seconds }) { Text("Сброс") }
+                                }
+                            }
+                        }
+                        listOf("Угадай мелодию", "Музыкальная пауза", "Танцевальный батл", "Замри под музыку", "Повтори движение").forEach { title ->
+                            Card(colors = CardDefaults.cardColors(containerColor = panel), modifier = Modifier.fillMaxWidth().padding(top = 7.dp).clickable { remaining = seconds; running = false; message = "Конкурс: $title" }) {
+                                Text(title, Modifier.padding(14.dp), fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
