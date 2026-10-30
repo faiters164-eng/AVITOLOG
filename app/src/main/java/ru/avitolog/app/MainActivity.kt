@@ -1,5 +1,7 @@
 package ru.avitolog.app
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,199 +15,137 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import java.net.URLEncoder
 
 data class Listing(
     val title: String,
     val price: Int,
     val category: String,
-    val description: String
+    val description: String,
+    val image: String
 )
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { AvitologApp() }
+        setContent {
+            AvitologApp { query ->
+                val q = URLEncoder.encode(query.ifBlank { "товары" }, "UTF-8")
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.avito.ru/all?q=$q")))
+            }
+        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AvitologApp() {
-    val listings = remember {
-        listOf(
-            Listing("Смартфон Samsung Galaxy", 12000, "Электроника", "Хорошее состояние, комплект"),
-            Listing("Ноутбук для работы", 25000, "Электроника", "Продаю срочно"),
-            Listing("Детская коляска", 4500, "Детское", "Бережное использование"),
-            Listing("Велосипед горный", 8000, "Спорт", "Есть небольшие следы эксплуатации"),
-            Listing("Игровая приставка", 15000, "Электроника", "Цена ниже средней")
-        )
-    }
+fun AvitologApp(onSearch: (String) -> Unit) {
+    val products = listOf(
+        Listing("Samsung Galaxy", 12000, "Электроника", "Хорошее состояние",
+            "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=500"),
+        Listing("Ноутбук", 25000, "Электроника", "Для работы и учёбы",
+            "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=500"),
+        Listing("Детская коляска", 4500, "Детское", "Бережное использование",
+            "https://images.unsplash.com/photo-1591348278863-a8fb3887e2aa?w=500"),
+        Listing("Велосипед", 8000, "Спорт", "Хорошее состояние",
+            "https://images.unsplash.com/photo-1485965120184-e220f721d03e?w=500")
+    )
 
     var query by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Все") }
     var favorites by remember { mutableStateOf(setOf<String>()) }
-    var onlyFavorites by remember { mutableStateOf(false) }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var tab by remember { mutableIntStateOf(0) }
 
-    val categories = listOf("Все", "Электроника", "Детское", "Спорт")
-
-    val filtered = listings.filter {
+    val filtered = products.filter {
         (category == "Все" || it.category == category) &&
         (it.title.contains(query, true) || it.description.contains(query, true)) &&
-        (!onlyFavorites || it.title in favorites)
+        (tab != 1 || it.title in favorites)
     }
 
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = androidx.compose.ui.graphics.Color(0xFF1769AA),
-            secondary = androidx.compose.ui.graphics.Color(0xFF16A085)
-        )
-    ) {
+    MaterialTheme(colorScheme = lightColorScheme(primary = androidx.compose.ui.graphics.Color(0xFF7652C8))) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text("АвитолоG", fontWeight = FontWeight.Bold)
-                            Text("Умный помощник покупателя", fontSize = 12.sp)
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { onlyFavorites = !onlyFavorites }) {
-                            Icon(Icons.Default.Favorite, "Избранное")
-                        }
+                TopAppBar(title = {
+                    Column {
+                        Text("АвитолоG", fontWeight = FontWeight.Bold)
+                        Text("Умный помощник покупателя", fontSize = 12.sp)
                     }
-                )
+                })
             },
             bottomBar = {
                 NavigationBar {
-                    NavigationBarItem(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0; onlyFavorites = false },
-                        icon = { Icon(Icons.Default.Search, null) },
-                        label = { Text("Поиск") }
-                    )
-                    NavigationBarItem(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1; onlyFavorites = true },
-                        icon = { Icon(Icons.Default.Favorite, null) },
-                        label = { Text("Избранное") }
-                    )
-                    NavigationBarItem(
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
-                        icon = { Icon(Icons.Default.Security, null) },
-                        label = { Text("Проверка") }
-                    )
+                    NavigationBarItem(tab == 0, { tab = 0 }, icon = { Icon(Icons.Default.Search, null) }, label = { Text("Поиск") })
+                    NavigationBarItem(tab == 1, { tab = 1 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { Text("Избранное") })
+                    NavigationBarItem(tab == 2, { tab = 2 }, icon = { Icon(Icons.Default.Security, null) }, label = { Text("Проверка") })
                 }
             }
         ) { padding ->
-            Column(
-                Modifier.fillMaxSize().padding(padding).padding(16.dp)
-            ) {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+            Column(Modifier.fillMaxSize().padding(padding).padding(14.dp)) {
+                Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text("Находи выгоднее!", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                        Text("Ищи товары и сохраняй интересные предложения")
+                        Text("Сравнивай товары и сохраняй интересные предложения")
                     }
                 }
 
-                Spacer(Modifier.height(14.dp))
-
+                Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = { Text("Что ищем? Например, iPhone") },
                     leadingIcon = { Icon(Icons.Default.Search, null) },
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }) {
-                                Icon(Icons.Default.Close, null)
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(16.dp)
+                    singleLine = true
                 )
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { onSearch(query) }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.OpenInNew, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Искать реальные объявления на Avito")
+                }
 
-                Spacer(Modifier.height(12.dp))
-
-                Text("Категории", fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    categories.forEach { item ->
-                        FilterChip(
-                            selected = category == item,
-                            onClick = { category = item },
-                            label = { Text(item) }
-                        )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("Все", "Электроника", "Детское", "Спорт").forEach {
+                        FilterChip(category == it, { category = it }, label = { Text(it, fontSize = 11.sp) })
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
-
-                if (selectedTab == 2) {
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary)
-                            Text("Защита от мошенников", fontWeight = FontWeight.Bold)
-                            Text("Проверяй подозрительные признаки: слишком низкую цену, просьбы перейти по ссылкам и предоплату.")
-                            Text("Проверка пока демонстрационная: не гарантирует безопасность сделки.")
-                        }
-                    }
+                Spacer(Modifier.height(8.dp))
+                if (tab == 2) {
+                    Text("Защита от мошенников", fontWeight = FontWeight.Bold)
+                    Text("Осторожно: подозрительно низкая цена, просьбы о предоплате и сторонние ссылки. Эта памятка не гарантирует безопасность сделки.")
                 } else {
-                    Text(
-                        if (onlyFavorites) "Избранное" else "Найденные предложения",
-                        fontWeight = FontWeight.Bold
-                    )
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        items(filtered) { listing ->
+                    Text(if (tab == 1) "Избранное" else "Примеры товаров", fontWeight = FontWeight.Bold)
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+                        items(filtered) { item ->
                             Card(Modifier.fillMaxWidth()) {
-                                Row(
-                                    Modifier.padding(14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                Row(Modifier.padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    AsyncImage(
+                                        model = item.image,
+                                        contentDescription = item.title,
+                                        modifier = Modifier.size(105.dp, 100.dp),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
-                                        Text(listing.title, fontWeight = FontWeight.Bold)
-                                        Text(listing.category, fontSize = 12.sp)
-                                        Text(listing.description, fontSize = 13.sp)
-                                        Text(
-                                            "%,d ₽".format(listing.price),
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontSize = 19.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        Text(item.title, fontWeight = FontWeight.Bold)
+                                        Text(item.description, fontSize = 12.sp)
+                                        Text("%,d ₽".format(item.price), fontSize = 18.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                                     }
                                     IconButton(onClick = {
-                                        favorites = if (listing.title in favorites)
-                                            favorites - listing.title
-                                        else favorites + listing.title
+                                        favorites = if (item.title in favorites) favorites - item.title else favorites + item.title
                                     }) {
-                                        Icon(
-                                            if (listing.title in favorites) Icons.Default.Favorite
-                                            else Icons.Default.FavoriteBorder,
-                                            contentDescription = "В избранное"
-                                        )
+                                        Icon(if (item.title in favorites) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null)
                                     }
                                 }
                             }
                         }
-                    }
-                    if (filtered.isEmpty()) {
-                        Text("Ничего не найдено. Измени запрос или категорию.")
                     }
                 }
             }
