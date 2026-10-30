@@ -131,22 +131,64 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
     fun applySellerFilter(view: WebView) {
         val hide = if (hideBusiness) "true" else "false"
         val js = """
-            (function() {
-              const hideBusiness = $hide;
-              const cards = Array.from(document.querySelectorAll('[data-marker="item"]'));
-              cards.forEach(card => {
-                if (card.dataset.avitologChecked === '1') return;
-                const text = (card.innerText || '').toLowerCase().replace(/\\s+/g, ' ');
-                const business = /магазин|компания|профессиональный продавец|продавец-компания/.test(text);
-                const privateSeller = /частное лицо|частный продавец/.test(text);
-                card.dataset.avitologChecked = '1';
-                card.dataset.avitologBusiness = business ? '1' : '0';
-                card.dataset.avitologPrivate = privateSeller ? '1' : '0';
-                if (hideBusiness && business) card.style.display = 'none';
-                else if (privateSeller) card.style.outline = '2px solid #2e9d59';
-              });
-              return { scanned: cards.length };
-            })();
+          (function() {
+            const hideFlag = $hide;
+            if (window.__avitologObserver) window.__avitologObserver.disconnect();
+            const checked = new Set();
+            const profileCache = new Map();
+            const profileLink = card => Array.from(card.querySelectorAll('a[href]'))
+              .map(a => a.href)
+              .find(h => /avito\\.ru\\/(brands\\/|user\\/[^/?#]+\\/profile)/i.test(h));
+            const cards = () => Array.from(document.querySelectorAll('[data-marker="item"]'));
+            const classify = async card => {
+              const href = profileLink(card);
+              if (!href || checked.has(card)) return;
+              checked.add(card);
+              card.dataset.avitologStatus = 'Проверяем продавца…';
+              try {
+                let data = profileCache.get(href);
+                if (!data) {
+                  data = fetch(href, {credentials:'include'})
+                    .then(r => { if (!r.ok) throw new Error('profile unavailable'); return r.text(); })
+                    .then(html => {
+                      const doc = new DOMParser().parseFromString(html, 'text/html');
+                      const body = (doc.body ? doc.body.innerText : '').toLowerCase();
+                      const profileCards = Array.from(doc.querySelectorAll('[data-marker="item"]'));
+                      const itemLinks = profileCards.flatMap(x => Array.from(x.querySelectorAll('a[href]')).map(a => a.getAttribute('href') || ''));
+                      const categories = new Set(itemLinks.map(h => h.split('?')[0].split('/').filter(Boolean).slice(-2,-1)[0]).filter(Boolean));
+                      const countMatches = [...body.matchAll(/(\\d[\\d\\s]*)\\s*(?:активн\\w*\\s*)?объявлен/gi)];
+                      const activeCount = countMatches.length ? Math.max(...countMatches.map(m => parseInt(m[1].replace(/\\s/g,''),10) || 0)) : profileCards.length;
+                      const business = /\\b(магазин|компания)\\b/.test(body) && !/частное лицо/.test(body);
+                      const typeBusiness = /профиль компании|тип профиля.{0,20}(компания|магазин)|\\bмагазин\\b/.test(body);
+                      const diversified = activeCount >= 40 && categories.size >= 3;
+                      return {business: business || typeBusiness, activeCount, categoryCount: categories.size, diversified};
+                    });
+                  profileCache.set(href, data);
+                }
+                const result = await data;
+                const probable = result.business || result.diversified;
+                card.dataset.avitologStatus = result.business ? 'Магазин/компания' : (result.diversified ? 'Вероятно массовый продавец' : 'Явных признаков магазина нет');
+                card.dataset.avitologScore = result.business ? 'high' : (result.diversified ? 'medium' : 'low');
+                if (probable && hideFlag) {
+                  card.style.display = 'none';
+                } else if (probable) {
+                  card.style.outline = '2px solid #d97706';
+                  card.title = card.dataset.avitologStatus + ' · активных объявлений: ' + result.activeCount;
+                } else {
+                  card.style.outline = '2px solid #2e9d59';
+                  card.title = 'По доступным данным явных признаков массовой торговли не найдено';
+                }
+              } catch (e) {
+                card.dataset.avitologStatus = 'Не удалось проверить профиль';
+                card.style.outline = '1px dashed #999';
+              }
+            };
+            const scan = () => cards().forEach(card => classify(card));
+            scan();
+            window.__avitologObserver = new MutationObserver(scan);
+            window.__avitologObserver.observe(document.body, {childList:true,subtree:true});
+            return 'seller profile analysis started';
+          })();
         """.trimIndent()
         view.evaluateJavascript(js, null)
     }
@@ -196,8 +238,8 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Checkbox(checked = hideBusiness, onCheckedChange = { hideBusiness = it; webView?.let { view -> applySellerFilter(view) } })
                             Column(Modifier.weight(1f)) {
-                                Text("Скрывать явные магазины", style = MaterialTheme.typography.bodyMedium)
-                                Text("По меткам продавца в карточке", style = MaterialTheme.typography.bodySmall)
+                                Text("Скрывать магазины и массовых продавцов", style = MaterialTheme.typography.bodyMedium)
+                                Text("Проверка публичного профиля и ассортимента", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -243,7 +285,7 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                                 webView = view
                                 view.settings.javaScriptEnabled = true
                             })
-                            Text("Фильтр скрывает только карточки с явными метками магазина/компании. Перекупщик с личным профилем может остаться: Avito не подтверждает, что статус «частное лицо» означает реального владельца.", style = MaterialTheme.typography.bodySmall)
+                            Text("Авито может ограничивать доступ к профилям. Скрываем магазины и профили с большим числом объявлений в нескольких категориях; частные перекупщики могут не определиться автоматически.", style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = { openExternal(url) }, modifier = Modifier.fillMaxWidth()) { Text("Открыть выдачу в Avito") }
                         } else {
                             Card(Modifier.fillMaxWidth()) {
