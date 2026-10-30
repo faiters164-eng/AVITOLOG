@@ -27,8 +27,8 @@ import kotlinx.coroutines.delay
 private data class Track(val title: String, val uri: Uri)
 private class Deck {
     var player: MediaPlayer? = null
-    var trackIndex: Int = -1
-    var playing: Boolean = false
+    var trackIndex by mutableIntStateOf(-1)
+    var playing by mutableStateOf(false)
     fun release() { runCatching { player?.stop(); player?.release() }; player = null; playing = false; trackIndex = -1 }
 }
 
