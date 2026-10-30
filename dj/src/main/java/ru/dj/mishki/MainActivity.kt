@@ -31,6 +31,10 @@ import java.net.URLEncoder
 import org.json.JSONObject
 import android.app.DownloadManager
 import android.os.Environment
+import com.vk.id.VKID
+import com.vk.id.VKIDAuthFail
+import com.vk.id.AccessToken
+import com.vk.id.auth.VKIDAuthCallback
 
 private data class Track(val title: String, val uri: Uri)
 private data class OnlineTrack(val id: String, val title: String, val artist: String, val provider: String, val streamUrl: String, val downloadUrl: String?, val artwork: String?)
@@ -40,9 +44,38 @@ private fun timeText(ms: Int): String {
 }
 
 class MainActivity : ComponentActivity() {
+    var vkAuthStatus by mutableStateOf("Не выполнен")
+        private set
+
+    private val vkAuthCallback = object : VKIDAuthCallback {
+        override fun onAuth(accessToken: AccessToken) {
+            runOnUiThread { vkAuthStatus = "Вход через VK выполнен успешно" }
+        }
+
+        override fun onFail(fail: VKIDAuthFail) {
+            runOnUiThread {
+                vkAuthStatus = if (fail is VKIDAuthFail.Canceled) {
+                    "Вход отменён"
+                } else {
+                    "Ошибка VK ID: ${fail.description}"
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        runCatching { VKID.init(this) }
+            .onFailure { vkAuthStatus = "VK ID пока не настроен: проверь ключ в GitHub Secrets" }
         setContent { DjMishkiApp() }
+    }
+
+    fun signInWithVk() {
+        runCatching {
+            VKID.instance.authorize(this, vkAuthCallback)
+        }.onFailure {
+            vkAuthStatus = "Не удалось запустить VK ID. Проверь настройки приложения."
+        }
     }
 }
 
@@ -533,6 +566,19 @@ private fun DjMishkiApp() {
                         Text("Плавное переключение: $fadeSeconds секунд", color = Color.LightGray)
                         Text("Повтор очереди: ${if (repeatQueue) "включён" else "выключен"}", color = Color.LightGray)
                         Text("Перемешивание: ${if (shuffleQueue) "включено" else "выключено"}", color = Color.LightGray)
+                        Spacer(Modifier.height(14.dp))
+                        Card(colors = CardDefaults.cardColors(containerColor = panel), modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                                Text("АККАУНТ VK ID", color = blue, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(6.dp))
+                                Text((context as? MainActivity)?.vkAuthStatus ?: "Статус недоступен", color = Color.LightGray, fontSize = 12.sp)
+                                Spacer(Modifier.height(8.dp))
+                                Button(onClick = { (context as? MainActivity)?.signInWithVk() }, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Войти через VK")
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
                         OutlinedButton(onClick = { releaseCurrent(); queue.clear(); message = "Плеер очищен" }) { Text("Сбросить плеер") }
                     }
                 }
