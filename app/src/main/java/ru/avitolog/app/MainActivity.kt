@@ -142,7 +142,7 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
             const cards = () => Array.from(document.querySelectorAll('[data-marker="item"]'));
             const classify = async card => {
               const href = profileLink(card);
-              if (!href || checked.has(card)) return;
+              if (!href || checked.has(card) || checked.size >= 20) return;
               checked.add(card);
               card.dataset.avitologStatus = 'Проверяем продавца…';
               try {
