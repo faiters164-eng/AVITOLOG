@@ -104,7 +104,7 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
     var minPrice by remember { mutableStateOf("") }
     var maxPrice by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf("По умолчанию") }
-    var hideBusiness by remember { mutableStateOf(true) }
+    var hideBusiness by remember { mutableStateOf(false) }
     var url by remember { mutableStateOf("https://www.avito.ru/") }
     var searched by remember { mutableStateOf(false) }
     var showSafety by remember { mutableStateOf(false) }
@@ -129,65 +129,35 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
         onShareConsumed()
     }
     fun applySellerFilter(view: WebView) {
+        // Локальная проверка меток карточек: без сетевых запросов к профилям продавцов.
         val hide = if (hideBusiness) "true" else "false"
         val js = """
           (function() {
             const hideFlag = $hide;
             if (window.__avitologObserver) window.__avitologObserver.disconnect();
-            const checked = new Set();
-            const profileCache = new Map();
-            const profileLink = card => Array.from(card.querySelectorAll('a[href]'))
-              .map(a => a.href)
-              .find(h => /avito\\.ru\\/(brands\\/|user\\/[^/?#]+\\/profile)/i.test(h));
-            const cards = () => Array.from(document.querySelectorAll('[data-marker="item"]'));
-            const classify = async card => {
-              const href = profileLink(card);
-              if (!href || checked.has(card) || checked.size >= 20) return;
-              checked.add(card);
-              card.dataset.avitologStatus = 'Проверяем продавца…';
-              try {
-                let data = profileCache.get(href);
-                if (!data) {
-                  data = fetch(href, {credentials:'include'})
-                    .then(r => { if (!r.ok) throw new Error('profile unavailable'); return r.text(); })
-                    .then(html => {
-                      const doc = new DOMParser().parseFromString(html, 'text/html');
-                      const body = (doc.body ? doc.body.innerText : '').toLowerCase();
-                      const profileCards = Array.from(doc.querySelectorAll('[data-marker="item"]'));
-                      const itemLinks = profileCards.flatMap(x => Array.from(x.querySelectorAll('a[href]')).map(a => a.getAttribute('href') || ''));
-                      const categories = new Set(itemLinks.map(h => h.split('?')[0].split('/').filter(Boolean).slice(-2,-1)[0]).filter(Boolean));
-                      const countMatches = [...body.matchAll(/(\\d[\\d\\s]*)\\s*(?:активн\\w*\\s*)?объявлен/gi)];
-                      const activeCount = countMatches.length ? Math.max(...countMatches.map(m => parseInt(m[1].replace(/\\s/g,''),10) || 0)) : profileCards.length;
-                      const business = /профиль компании|магазин на авито|страница магазина|тип профиля.{0,25}(компания|магазин)|компания на авито/.test(body);
-                      const typeBusiness = /профиль компании|магазин на авито|страница магазина|тип профиля.{0,25}(компания|магазин)|компания на авито/.test(body);
-                      const diversified = activeCount >= 40 && categories.size >= 3;
-                      return {business: business || typeBusiness, activeCount, categoryCount: categories.size, diversified};
-                    });
-                  profileCache.set(href, data);
-                }
-                const result = await data;
-                const probable = result.business || result.diversified;
-                card.dataset.avitologStatus = result.business ? 'Магазин/компания' : (result.diversified ? 'Вероятно массовый продавец' : 'Явных признаков магазина нет');
-                card.dataset.avitologScore = result.business ? 'high' : (result.diversified ? 'medium' : 'low');
-                if (probable && hideFlag) {
-                  card.style.display = 'none';
-                } else if (probable) {
+            if (window.__avitologTimer) clearTimeout(window.__avitologTimer);
+            const scan = () => {
+              document.querySelectorAll('[data-marker="item"]').forEach(card => {
+                if (card.dataset.avitologScanned === '1') return;
+                card.dataset.avitologScanned = '1';
+                const labels = Array.from(card.querySelectorAll('[aria-label], [title], [data-marker]'))
+                  .map(el => [el.getAttribute('aria-label') || '', el.getAttribute('title') || '', el.getAttribute('data-marker') || ''].join(' '))
+                  .join(' ').toLowerCase();
+                const company = /профиль компании|магазин на авито|страница магазина|компания на авито/.test(labels);
+                if (company && hideFlag) card.style.display = 'none';
+                else if (company) {
                   card.style.outline = '2px solid #d97706';
-                  card.title = card.dataset.avitologStatus + ' · активных объявлений: ' + result.activeCount;
-                } else {
-                  card.style.outline = '2px solid #2e9d59';
-                  card.title = 'По доступным данным явных признаков массовой торговли не найдено';
+                  card.title = 'Возможный магазин или профиль компании';
                 }
-              } catch (e) {
-                card.dataset.avitologStatus = 'Не удалось проверить профиль';
-                card.style.outline = '1px dashed #999';
-              }
+              });
             };
-            const scan = () => cards().forEach(card => classify(card));
+            const schedule = () => {
+              if (window.__avitologTimer) clearTimeout(window.__avitologTimer);
+              window.__avitologTimer = setTimeout(scan, 300);
+            };
             scan();
-            window.__avitologObserver = new MutationObserver(scan);
+            window.__avitologObserver = new MutationObserver(schedule);
             window.__avitologObserver.observe(document.body, {childList:true,subtree:true});
-            return 'seller profile analysis started';
           })();
         """.trimIndent()
         view.evaluateJavascript(js, null)
@@ -216,7 +186,7 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
     MaterialTheme(colorScheme = lightColorScheme(primary = androidx.compose.ui.graphics.Color(0xFF7652C8))) {
         Scaffold(topBar = { TopAppBar(title = { Column { Text("АвитолоG"); Text("Охота за выгодой на Avito", fontSize = 12.sp) } }) }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                val tabs = listOf("Поиск", "Находки", "Оценка")
+                val tabs = listOf("Поиск", "Выдача", "Находки", "Оценка")
                 ScrollableTabRow(selectedTabIndex = tabs.indexOf(tab)) {
                     tabs.forEach { label -> Tab(selected = tab == label, onClick = { tab = label }, text = { Text(label) }) }
                 }
@@ -259,34 +229,13 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                         }
                         if (searched) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Результаты Avito", style = MaterialTheme.typography.titleMedium)
+                                Text("Поиск готов", style = MaterialTheme.typography.titleMedium)
                                 TextButton(onClick = { saveSearch() }) { Text("☆ В избранное") }
                             }
-                            AndroidView(factory = { ctx ->
-                                WebView(ctx).apply {
-                                    settings.javaScriptEnabled = true
-                                    settings.domStorageEnabled = true
-                                    settings.useWideViewPort = false
-                                    settings.loadWithOverviewMode = false
-                                    settings.textZoom = 110
-                                    settings.setSupportZoom(true)
-                                    settings.builtInZoomControls = true
-                                    settings.displayZoomControls = false
-                                    webViewClient = object : WebViewClient() {
-                                        override fun onPageFinished(view: WebView, pageUrl: String) {
-                                            super.onPageFinished(view, pageUrl)
-                                            applySellerFilter(view)
-                                        }
-                                    }
-                                    loadUrl(url)
-                                    webView = this
-                                }
-                            }, modifier = Modifier.weight(1f).fillMaxWidth(), update = { view ->
-                                webView = view
-                                view.settings.javaScriptEnabled = true
-                            })
-                            Text("Авито может ограничивать доступ к профилям. Скрываем магазины и профили с большим числом объявлений в нескольких категориях; частные перекупщики могут не определиться автоматически.", style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = { openExternal(url) }, modifier = Modifier.fillMaxWidth()) { Text("Открыть выдачу в Avito") }
+                            Button(onClick = { tab = "Выдача" }, modifier = Modifier.fillMaxWidth()) {
+                                Text("ПОКАЗАТЬ ОБЪЯВЛЕНИЯ")
+                            }
+                            Text("Выдача откроется на отдельном экране — карточки будут крупнее.", style = MaterialTheme.typography.bodySmall)
                         } else {
                             Card(Modifier.fillMaxWidth()) {
                                 Column(Modifier.padding(16.dp)) {
@@ -295,6 +244,49 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                                     Spacer(Modifier.height(6.dp))
                                     Text("Чтобы добавить объявление в находки, нажми «Поделиться» в Avito и выбери АвитолоG.")
                                 }
+                            }
+                        }
+                    }
+                    "Выдача" -> {
+                        if (!searched) {
+                            Column(Modifier.fillMaxSize().padding(20.dp)) {
+                                Text("Сначала выполни поиск", style = MaterialTheme.typography.titleLarge)
+                                Button(onClick = { tab = "Поиск" }) { Text("К поиску") }
+                            }
+                        } else {
+                            Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Объявления Avito", style = MaterialTheme.typography.titleMedium)
+                                    TextButton(onClick = { webView?.reload() }) { Text("Обновить") }
+                                }
+                                AndroidView(factory = { ctx ->
+                                    WebView(ctx).apply {
+                                        settings.javaScriptEnabled = true
+                                        settings.domStorageEnabled = true
+                                        settings.loadsImagesAutomatically = true
+                                        settings.useWideViewPort = true
+                                        settings.loadWithOverviewMode = true
+                                        settings.textZoom = 100
+                                        settings.setSupportZoom(true)
+                                        settings.builtInZoomControls = true
+                                        settings.displayZoomControls = false
+                                        android.webkit.CookieManager.getInstance().setAcceptCookie(true)
+                                        android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                        webViewClient = object : WebViewClient() {
+                                            override fun onPageFinished(view: WebView, pageUrl: String) {
+                                                super.onPageFinished(view, pageUrl)
+                                                applySellerFilter(view)
+                                            }
+                                        }
+                                        loadUrl(url)
+                                        webView = this
+                                    }
+                                }, modifier = Modifier.weight(1f).fillMaxWidth(), update = { view ->
+                                    if (view.url != url) view.loadUrl(url)
+                                    webView = view
+                                })
+                                Text("Фильтр магазинов работает по доступным меткам карточки; это не проверка надёжности продавца.", style = MaterialTheme.typography.bodySmall)
+                                TextButton(onClick = { openExternal(url) }, modifier = Modifier.fillMaxWidth()) { Text("Открыть в приложении Avito") }
                             }
                         }
                     }
