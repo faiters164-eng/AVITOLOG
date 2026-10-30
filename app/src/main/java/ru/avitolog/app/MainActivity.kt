@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +40,35 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.avito.ru/all?q=$q")))
             }
         }
+        selectedProduct?.let { item ->
+            AlertDialog(
+                onDismissRequest = { selectedProduct = null },
+                title = { Text(item.title) },
+                text = {
+                    Column {
+                        AsyncImage(
+                            model = item.image,
+                            contentDescription = item.title,
+                            modifier = Modifier.fillMaxWidth().height(220.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                        Text("%,d ₽".format(item.price), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        Text(item.description)
+                        Text("Демонстрационный товар, не реальное объявление Avito.")
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { onSearch(item.title); selectedProduct = null }) {
+                        Text("Найти на Avito")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { selectedProduct = null }) {
+                        Text("Закрыть")
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -60,6 +90,7 @@ fun AvitologApp(onSearch: (String) -> Unit) {
     var category by remember { mutableStateOf("Все") }
     var favorites by remember { mutableStateOf(setOf<String>()) }
     var tab by remember { mutableIntStateOf(0) }
+    var selectedProduct by remember { mutableStateOf<Listing?>(null) }
 
     val filtered = products.filter {
         (category == "Все" || it.category == category) &&
@@ -124,7 +155,7 @@ fun AvitologApp(onSearch: (String) -> Unit) {
                     Text(if (tab == 1) "Избранное" else "Примеры товаров", fontWeight = FontWeight.Bold)
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
                         items(filtered) { item ->
-                            Card(Modifier.fillMaxWidth()) {
+                            Card(Modifier.fillMaxWidth().clickable { selectedProduct = item }) {
                                 Row(Modifier.padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
                                     AsyncImage(
                                         model = item.image,
