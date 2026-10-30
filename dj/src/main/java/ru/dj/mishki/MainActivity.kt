@@ -169,30 +169,25 @@ private fun DjMishkiApp() {
                                         )
                                         Text("Громкость ${(deck.gain * 100).toInt()}%", fontSize = 10.sp, color = Color.LightGray)
                                         Slider(value = deck.gain, onValueChange = { deck.gain = it; applyMix() })
-                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            FilledTonalButton(
-                                                onClick = {
-                                                    when {
-                                                        deck.playing -> { deck.player?.pause(); deck.playing = false }
-                                                        deck.player != null -> { deck.player?.start(); deck.playing = true }
-                                                        deck.trackIndex >= 0 -> loadDeck(deck, deck.trackIndex)
-                                                        selected >= 0 -> loadDeck(deck, selected)
+                                        FilledTonalButton(
+                                            onClick = {
+                                                when {
+                                                    deck.playing -> {
+                                                        deck.player?.pause()
+                                                        deck.playing = false
                                                     }
-                                                },
-                                                enabled = deck.trackIndex >= 0 || selected >= 0,
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                                            ) {
-                                                Text(when {
-                                                    deck.playing -> "Ⅱ  Пауза"
-                                                    deck.trackIndex >= 0 -> "▶  Продолжить"
-                                                    else -> "▶  Старт"
-                                                }, fontSize = 11.sp)
-                                            }
-                                            FilledTonalButton(
-                                                onClick = { if (deck.trackIndex >= 0) { deck.stopPlayback(); message = "Плеер $label остановлен" } },
-                                                enabled = deck.trackIndex >= 0,
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                                            ) { Text("■  Стоп", fontSize = 11.sp) }
+                                                    deck.player != null -> {
+                                                        deck.player?.start()
+                                                        deck.playing = true
+                                                    }
+                                                    selected >= 0 -> loadDeck(deck, selected)
+                                                }
+                                            },
+                                            enabled = deck.trackIndex >= 0 || selected >= 0,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                        ) {
+                                            Text(if (deck.playing) "Ⅱ  Пауза" else "▶  Плей", fontSize = 12.sp)
                                         }
                                     }
                                 }
