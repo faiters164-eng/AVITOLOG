@@ -29,6 +29,8 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build APK
+        env:
+          VKID_CLIENT_SECRET: ${{ secrets.VKID_CLIENT_SECRET }}
         run: gradle assembleDebug
 
       - name: Print DJ APK signing certificate SHA-1
