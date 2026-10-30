@@ -33,7 +33,7 @@ import android.app.DownloadManager
 import android.os.Environment
 
 private data class Track(val title: String, val uri: Uri)
-private data class OnlineTrack(val id: String, val title: String, val artist: String, val artwork: String?)
+private data class OnlineTrack(val id: String, val title: String, val artist: String, val provider: String, val streamUrl: String, val downloadUrl: String?, val artwork: String?)
 private fun timeText(ms: Int): String {
     val s = ms.coerceAtLeast(0) / 1000
     return "%d:%02d".format(s / 60, s % 60)
@@ -74,43 +74,101 @@ private fun DjMishkiApp() {
     val tone = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 90) }
     var advanceAction by remember { mutableStateOf<(Boolean) -> Unit>({}) }
 
-    suspend fun searchAudius(query: String): List<OnlineTrack> = withContext(Dispatchers.IO) {
+    suspend fun searchOnline(query: String): List<OnlineTrack> = withContext(Dispatchers.IO) {
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val connection = URL("https://api.audius.co/v1/tracks/search?query=$encoded&limit=25").openConnection()
-        connection.connectTimeout = 15000
-        connection.readTimeout = 20000
-        val body = connection.getInputStream().bufferedReader().use { it.readText() }
-        val data = JSONObject(body).optJSONArray("data") ?: return@withContext emptyList()
-        buildList {
-            for (i in 0 until data.length()) {
+        val found = mutableListOf<OnlineTrack>()
+
+        // Audius: open catalog with direct streaming endpoint.
+        runCatching {
+            val url = URL("https://discoveryprovider.audius.co/v1/tracks/search?query=$encoded&limit=20")
+            val connection = url.openConnection()
+            connection.connectTimeout = 12000
+            connection.readTimeout = 18000
+            val body = connection.getInputStream().bufferedReader().use { it.readText() }
+            val data = JSONObject(body).optJSONArray("data")
+            if (data != null) for (i in 0 until data.length()) {
                 val item = data.optJSONObject(i) ?: continue
                 val user = item.optJSONObject("user")
                 val artwork = item.optJSONObject("artwork")
                 val id = item.optString("id")
                 val title = item.optString("title")
                 if (id.isNotBlank() && title.isNotBlank()) {
-                    add(OnlineTrack(id, title, user?.optString("name") ?: "Audius", artwork?.optString("150x150")))
+                    found.add(OnlineTrack(
+                        "audius:$id", title, user?.optString("name")?.takeIf { it.isNotBlank() } ?: "Audius",
+                        "Audius", "https://discoveryprovider.audius.co/v1/tracks/$id/stream?app_name=DJ_MISHKI",
+                        "https://discoveryprovider.audius.co/v1/tracks/$id/download?app_name=DJ_MISHKI",
+                        artwork?.optString("150x150")
+                    ))
                 }
             }
         }
+
+        // Internet Archive: search openly available audio items and resolve actual audio files.
+        runCatching {
+            val iaQuery = URLEncoder.encode("mediatype:audio AND ($query)", "UTF-8")
+            val searchUrl = URL("https://archive.org/advancedsearch.php?q=$iaQuery&fl[]=identifier,title,creator&rows=12&page=1&output=json")
+            val connection = searchUrl.openConnection()
+            connection.connectTimeout = 12000
+            connection.readTimeout = 18000
+            val body = connection.getInputStream().bufferedReader().use { it.readText() }
+            val docs = JSONObject(body).optJSONObject("response")?.optJSONArray("docs")
+            if (docs != null) for (i in 0 until docs.length()) {
+                val doc = docs.optJSONObject(i) ?: continue
+                val identifier = doc.optString("identifier")
+                if (identifier.isBlank()) continue
+                runCatching {
+                    val metaConn = URL("https://archive.org/metadata/$identifier").openConnection()
+                    metaConn.connectTimeout = 10000
+                    metaConn.readTimeout = 12000
+                    val metaBody = metaConn.getInputStream().bufferedReader().use { it.readText() }
+                    val files = JSONObject(metaBody).optJSONArray("files") ?: return@runCatching
+                    var audioFile: String? = null
+                    for (j in 0 until files.length()) {
+                        val file = files.optJSONObject(j) ?: continue
+                        val name = file.optString("name")
+                        val format = file.optString("format").lowercase()
+                        if (file.optString("source") == "original" &&
+                            (format.contains("mp3") || format.contains("mpeg") || name.endsWith(".mp3", true) || name.endsWith(".ogg", true) || name.endsWith(".flac", true))) {
+                            audioFile = name
+                            break
+                        }
+                    }
+                    val fileName = audioFile ?: return@runCatching
+                    val encodedFile = fileName.split("/").joinToString("/") { URLEncoder.encode(it, "UTF-8") }
+                    val title = doc.optString("title").takeIf { it.isNotBlank() } ?: identifier
+                    val creator = doc.optString("creator").takeIf { it.isNotBlank() } ?: "Internet Archive"
+                    val direct = "https://archive.org/download/$identifier/$encodedFile"
+                    found.add(OnlineTrack("archive:$identifier", title, creator, "Internet Archive", direct, direct, null))
+                }
+            }
+        }
+
+        found.distinctBy { it.id }.take(35)
     }
 
-    fun onlineAsTrack(track: OnlineTrack): Track =
-        Track("${track.title} — ${track.artist}", Uri.parse("https://api.audius.co/v1/tracks/${track.id}/stream"))
+    fun onlineAsTrack(track: OnlineTrack): Track = Track(
+        "${track.title} — ${track.artist} [${track.provider}]",
+        Uri.parse(track.streamUrl)
+    )
 
     fun downloadOnlineTrack(track: OnlineTrack) {
+        val downloadUrl = track.downloadUrl
+        if (downloadUrl.isNullOrBlank()) {
+            message = "Для этой записи скачивание не предоставлено источником."
+            return
+        }
         runCatching {
-            val request = DownloadManager.Request(Uri.parse("https://api.audius.co/v1/tracks/${track.id}/download"))
+            val safeName = track.title.replace(Regex("[^a-zA-Zа-яА-Я0-9 _-]"), "").take(90).ifBlank { "track" }
+            val request = DownloadManager.Request(Uri.parse(downloadUrl))
                 .setTitle(track.title)
-                .setDescription("DJ MISHKI • ${track.artist}")
+                .setDescription("DJ MISHKI • ${track.artist} • ${track.provider}")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "DJ MISHKI/${track.title.replace(Regex("[^a-zA-Zа-яА-Я0-9 _-]"), "")}.mp3")
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "DJ MISHKI/$safeName.mp3")
                 .setAllowedOverMetered(true)
                 .setAllowedOverRoaming(false)
-            val manager = context.getSystemService(DownloadManager::class.java)
-            manager.enqueue(request)
+            context.getSystemService(DownloadManager::class.java).enqueue(request)
             message = "Загрузка началась: ${track.title}"
-        }.onFailure { message = "Не удалось начать загрузку. Возможно, трек недоступен для скачивания." }
+        }.onFailure { message = "Источник не разрешил скачать эту запись." }
     }
 
     fun releaseCurrent() {
@@ -126,8 +184,8 @@ private fun DjMishkiApp() {
             try {
                 val incoming = MediaPlayer()
                 incoming.setDataSource(context, track.uri)
+                withContext(Dispatchers.IO) { incoming.prepare() }
                 incoming.setVolume(if (useFade && player != null) 0f else master, if (useFade && player != null) 0f else master)
-                incoming.prepare()
                 val outgoing = player
                 incoming.start()
                 player = incoming
@@ -352,7 +410,7 @@ private fun DjMishkiApp() {
                             value = onlineQuery,
                             onValueChange = { onlineQuery = it },
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Название песни или исполнитель") },
+                            label = { Text("Песня или исполнитель — ищем в Audius и Internet Archive") },
                             singleLine = true
                         )
                         Spacer(Modifier.height(6.dp))
@@ -362,8 +420,8 @@ private fun DjMishkiApp() {
                                     onlineLoading = true
                                     onlineError = ""
                                     try {
-                                        onlineResults = searchAudius(onlineQuery)
-                                        if (onlineResults.isEmpty()) onlineError = "Ничего не найдено"
+                                        onlineResults = searchOnline(onlineQuery)
+                                        if (onlineResults.isEmpty()) onlineError = "Ничего не найдено в открытых каталогах. Попробуй другое написание или имя исполнителя."
                                     } catch (_: Exception) {
                                         onlineError = "Не удалось выполнить поиск. Проверь интернет."
                                     } finally { onlineLoading = false }
@@ -378,7 +436,7 @@ private fun DjMishkiApp() {
                                 Card(colors = CardDefaults.cardColors(containerColor = panel)) {
                                     Column(Modifier.fillMaxWidth().padding(10.dp)) {
                                         Text(track.title, fontWeight = FontWeight.Bold, maxLines = 2)
-                                        Text(track.artist, color = Color.LightGray, fontSize = 12.sp)
+                                        Text("${track.artist} • ${track.provider}", color = Color.LightGray, fontSize = 12.sp)
                                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                             TextButton(onClick = { startTrack(onlineAsTrack(track), player != null) }) { Text("▶ Слушать") }
                                             TextButton(onClick = { queue.add(onlineAsTrack(track)); message = "Добавлено в очередь" }) { Text("＋ В очередь") }
