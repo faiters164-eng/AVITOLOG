@@ -189,7 +189,11 @@ private fun DjMishkiApp() {
                         }
                         Spacer(Modifier.height(8.dp))
                         Text("Выбери песню для загрузки в плеер A или B", color = Color.LightGray, fontSize = 12.sp)
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            contentPadding = PaddingValues(bottom = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
                             itemsIndexed(tracks) { index, track ->
                                 Card(colors = CardDefaults.cardColors(containerColor = if (selected == index) Color(0xFF293C3A) else panel), modifier = Modifier.fillMaxWidth().clickable { selected = index }) {
                                     Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
