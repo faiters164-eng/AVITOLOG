@@ -104,6 +104,7 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
     var minPrice by remember { mutableStateOf("") }
     var maxPrice by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf("По умолчанию") }
+    var hideBusiness by remember { mutableStateOf(true) }
     var url by remember { mutableStateOf("https://www.avito.ru/") }
     var searched by remember { mutableStateOf(false) }
     var showSafety by remember { mutableStateOf(false) }
@@ -126,6 +127,28 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
         }
         tab = "Находки"
         onShareConsumed()
+    }
+    fun applySellerFilter(view: WebView) {
+        val hide = if (hideBusiness) "true" else "false"
+        val js = """
+            (function() {
+              const hideBusiness = $hide;
+              const cards = Array.from(document.querySelectorAll('[data-marker="item"]'));
+              cards.forEach(card => {
+                if (card.dataset.avitologChecked === '1') return;
+                const text = (card.innerText || '').toLowerCase().replace(/\\s+/g, ' ');
+                const business = /магазин|компания|профессиональный продавец|продавец-компания/.test(text);
+                const privateSeller = /частное лицо|частный продавец/.test(text);
+                card.dataset.avitologChecked = '1';
+                card.dataset.avitologBusiness = business ? '1' : '0';
+                card.dataset.avitologPrivate = privateSeller ? '1' : '0';
+                if (hideBusiness && business) card.style.display = 'none';
+                else if (privateSeller) card.style.outline = '2px solid #2e9d59';
+              });
+              return { scanned: cards.length };
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(js, null)
     }
     fun makeSearch() {
         val location = regionSlug(region)
@@ -170,6 +193,13 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                             listOf("По умолчанию", "Дешевле", "Дороже").forEach { FilterChip(sort == it, { sort = it }, label = { Text(it, fontSize = 11.sp) }) }
                         }
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Checkbox(checked = hideBusiness, onCheckedChange = { hideBusiness = it; webView?.let { view -> applySellerFilter(view) } })
+                            Column(Modifier.weight(1f)) {
+                                Text("Скрывать явные магазины", style = MaterialTheme.typography.bodyMedium)
+                                Text("По меткам продавца в карточке", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             Button(onClick = { makeSearch() }, modifier = Modifier.weight(1f)) { Text("НАЙТИ", fontSize = 13.sp) }
                             OutlinedButton(onClick = { showSafety = true }) { Text("Анти-обман", fontSize = 12.sp) }
@@ -200,11 +230,20 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                                     settings.setSupportZoom(true)
                                     settings.builtInZoomControls = true
                                     settings.displayZoomControls = false
-                                    webViewClient = WebViewClient()
+                                    webViewClient = object : WebViewClient() {
+                                        override fun onPageFinished(view: WebView, pageUrl: String) {
+                                            super.onPageFinished(view, pageUrl)
+                                            applySellerFilter(view)
+                                        }
+                                    }
                                     loadUrl(url)
                                     webView = this
                                 }
-                            }, modifier = Modifier.weight(1f).fillMaxWidth(), update = { view -> webView = view })
+                            }, modifier = Modifier.weight(1f).fillMaxWidth(), update = { view ->
+                                webView = view
+                                view.settings.javaScriptEnabled = true
+                            })
+                            Text("Фильтр скрывает только карточки с явными метками магазина/компании. Перекупщик с личным профилем может остаться: Avito не подтверждает, что статус «частное лицо» означает реального владельца.", style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = { openExternal(url) }, modifier = Modifier.fillMaxWidth()) { Text("Открыть выдачу в Avito") }
                         } else {
                             Card(Modifier.fillMaxWidth()) {
