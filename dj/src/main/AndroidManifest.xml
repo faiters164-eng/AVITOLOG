@@ -2,7 +2,20 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="DJ MISHKI" android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true">
-            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+            <meta-data android:name="VKIDClientID" android:value="${VKIDClientID}" />
+            <meta-data android:name="VKIDClientSecret" android:value="${VKIDClientSecret}" />
+            <meta-data android:name="VKIDRedirectHost" android:value="${VKIDRedirectHost}" />
+            <meta-data android:name="VKIDRedirectScheme" android:value="${VKIDRedirectScheme}" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="vk54866854" android:host="vk.ru" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>
