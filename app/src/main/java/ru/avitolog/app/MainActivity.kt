@@ -190,7 +190,7 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                                 Text("Результаты Avito", style = MaterialTheme.typography.titleMedium)
                                 TextButton(onClick = { saveSearch() }) { Text("☆ В избранное") }
                             }
-                            AndroidView(Modifier.weight(1f).fillMaxWidth(), factory = { ctx ->
+                            AndroidView(factory = { ctx ->
                                 WebView(ctx).apply {
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
@@ -204,7 +204,7 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                                     loadUrl(url)
                                     webView = this
                                 }
-                            }, update = { webView = it })
+                            }, modifier = Modifier.weight(1f).fillMaxWidth(), update = { view -> webView = view })
                             TextButton(onClick = { openExternal(url) }, modifier = Modifier.fillMaxWidth()) { Text("Открыть выдачу в Avito") }
                         } else {
                             Card(Modifier.fillMaxWidth()) {
