@@ -24,8 +24,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.URL
+import java.net.URLEncoder
+import org.json.JSONObject
+import android.app.DownloadManager
+import android.os.Environment
 
 private data class Track(val title: String, val uri: Uri)
+private data class OnlineTrack(val id: String, val title: String, val artist: String, val artwork: String?)
 private fun timeText(ms: Int): String {
     val s = ms.coerceAtLeast(0) / 1000
     return "%d:%02d".format(s / 60, s % 60)
@@ -48,6 +56,10 @@ private fun DjMishkiApp() {
     val queue = remember { mutableStateListOf<Track>() }
     val effects = remember { mutableStateListOf<Track>() }
     var section by remember { mutableStateOf("Пульт") }
+    var onlineQuery by remember { mutableStateOf("") }
+    var onlineResults by remember { mutableStateOf<List<OnlineTrack>>(emptyList()) }
+    var onlineLoading by remember { mutableStateOf(false) }
+    var onlineError by remember { mutableStateOf("") }
     var current by remember { mutableStateOf<Track?>(null) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var playing by remember { mutableStateOf(false) }
@@ -61,6 +73,45 @@ private fun DjMishkiApp() {
     var tick by remember { mutableIntStateOf(0) }
     val tone = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 90) }
     var advanceAction by remember { mutableStateOf<(Boolean) -> Unit>({}) }
+
+    suspend fun searchAudius(query: String): List<OnlineTrack> = withContext(Dispatchers.IO) {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val connection = URL("https://api.audius.co/v1/tracks/search?query=$encoded&limit=25").openConnection()
+        connection.connectTimeout = 15000
+        connection.readTimeout = 20000
+        val body = connection.getInputStream().bufferedReader().use { it.readText() }
+        val data = JSONObject(body).optJSONArray("data") ?: return@withContext emptyList()
+        buildList {
+            for (i in 0 until data.length()) {
+                val item = data.optJSONObject(i) ?: continue
+                val user = item.optJSONObject("user")
+                val artwork = item.optJSONObject("artwork")
+                val id = item.optString("id")
+                val title = item.optString("title")
+                if (id.isNotBlank() && title.isNotBlank()) {
+                    add(OnlineTrack(id, title, user?.optString("name") ?: "Audius", artwork?.optString("150x150")))
+                }
+            }
+        }
+    }
+
+    fun onlineAsTrack(track: OnlineTrack): Track =
+        Track("${track.title} — ${track.artist}", Uri.parse("https://api.audius.co/v1/tracks/${track.id}/stream"))
+
+    fun downloadOnlineTrack(track: OnlineTrack) {
+        runCatching {
+            val request = DownloadManager.Request(Uri.parse("https://api.audius.co/v1/tracks/${track.id}/download"))
+                .setTitle(track.title)
+                .setDescription("DJ MISHKI • ${track.artist}")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "DJ MISHKI/${track.title.replace(Regex("[^a-zA-Zа-яА-Я0-9 _-]"), "")}.mp3")
+                .setAllowedOverMetered(true)
+                .setAllowedOverRoaming(false)
+            val manager = context.getSystemService(DownloadManager::class.java)
+            manager.enqueue(request)
+            message = "Загрузка началась: ${track.title}"
+        }.onFailure { message = "Не удалось начать загрузку. Возможно, трек недоступен для скачивания." }
+    }
 
     fun releaseCurrent() {
         runCatching { player?.setOnCompletionListener(null); player?.release() }
@@ -204,11 +255,11 @@ private fun DjMishkiApp() {
             },
             bottomBar = {
                 NavigationBar(containerColor = panel) {
-                    listOf("Пульт", "Музыка", "Эффекты", "Игры", "Настройки").forEach { label ->
+                    listOf("Пульт", "Музыка", "Онлайн", "Эффекты", "Игры", "Настройки").forEach { label ->
                         NavigationBarItem(
                             selected = section == label,
                             onClick = { section = label },
-                            icon = { Text(when (label) { "Пульт" -> "🎧"; "Музыка" -> "♫"; "Эффекты" -> "〰"; "Игры" -> "🎮"; else -> "⚙" }) },
+                            icon = { Text(when (label) { "Пульт" -> "🎧"; "Музыка" -> "♫"; "Онлайн" -> "🌐"; "Эффекты" -> "〰"; "Игры" -> "🎮"; else -> "⚙" }) },
                             label = { Text(label, fontSize = 10.sp) }
                         )
                     }
@@ -295,6 +346,48 @@ private fun DjMishkiApp() {
                             OutlinedButton(onClick = { queue.clear(); message = "Очередь очищена" }, modifier = Modifier.weight(1f)) { Text("Очистить") }
                         }
                         Text(message, color = Color.LightGray, fontSize = 10.sp, modifier = Modifier.padding(top = 5.dp))
+                    }
+                    "Онлайн" -> {
+                        OutlinedTextField(
+                            value = onlineQuery,
+                            onValueChange = { onlineQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Название песни или исполнитель") },
+                            singleLine = true
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Button(
+                            onClick = {
+                                if (onlineQuery.isNotBlank()) scope.launch {
+                                    onlineLoading = true
+                                    onlineError = ""
+                                    try {
+                                        onlineResults = searchAudius(onlineQuery)
+                                        if (onlineResults.isEmpty()) onlineError = "Ничего не найдено"
+                                    } catch (_: Exception) {
+                                        onlineError = "Не удалось выполнить поиск. Проверь интернет."
+                                    } finally { onlineLoading = false }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !onlineLoading
+                        ) { Text(if (onlineLoading) "Ищем..." else "⌕ Найти музыку") }
+                        if (onlineError.isNotBlank()) Text(onlineError, color = Color.LightGray, modifier = Modifier.padding(8.dp))
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            itemsIndexed(onlineResults) { _, track ->
+                                Card(colors = CardDefaults.cardColors(containerColor = panel)) {
+                                    Column(Modifier.fillMaxWidth().padding(10.dp)) {
+                                        Text(track.title, fontWeight = FontWeight.Bold, maxLines = 2)
+                                        Text(track.artist, color = Color.LightGray, fontSize = 12.sp)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                            TextButton(onClick = { startTrack(onlineAsTrack(track), player != null) }) { Text("▶ Слушать") }
+                                            TextButton(onClick = { queue.add(onlineAsTrack(track)); message = "Добавлено в очередь" }) { Text("＋ В очередь") }
+                                            TextButton(onClick = { downloadOnlineTrack(track) }) { Text("⬇ Скачать") }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     "Музыка" -> {
                         Button(onClick = { musicPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить песни с телефона") }
