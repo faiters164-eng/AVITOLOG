@@ -146,66 +146,54 @@ private fun DjMishkiApp() {
             Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 14.dp, vertical = 10.dp)) {
                 when(section) {
                     "Пульт" -> {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf("A" to deckA, "B" to deckB).forEach { (label, deck) ->
-                                Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(18.dp)) {
-                                    Column(Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("ПЛЕЕР $label", color = neon, fontWeight = FontWeight.Bold)
-                                        Text(tracks.getOrNull(deck.trackIndex)?.title ?: "Не загружен", maxLines = 2, minLines = 2, fontSize = 13.sp)
-                                        Text("${timeText(deck.position)} / ${timeText(deck.duration)}", fontSize = 11.sp, color = Color.LightGray)
+                                Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(16.dp)) {
+                                    Column(Modifier.fillMaxWidth().padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("ПЛЕЕР $label", color = neon, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                        Text(tracks.getOrNull(deck.trackIndex)?.title ?: "Не загружен", maxLines = 1, fontSize = 11.sp)
+                                        Text("${timeText(deck.position)} / ${timeText(deck.duration)}", fontSize = 10.sp, color = Color.LightGray)
                                         Slider(
                                             value = if (deck.duration > 0) deck.position.toFloat().coerceIn(0f, deck.duration.toFloat()) else 0f,
                                             onValueChange = { deck.position = it.toInt() },
                                             onValueChangeFinished = { runCatching { deck.player?.seekTo(deck.position) } },
-                                            valueRange = 0f..(deck.duration.coerceAtLeast(1).toFloat()),
+                                            valueRange = 0f..deck.duration.coerceAtLeast(1).toFloat(),
                                             enabled = deck.trackIndex >= 0 && deck.duration > 0
                                         )
-                                        Text("Громкость плеера ${(deck.gain * 100).toInt()}%", fontSize = 11.sp, color = Color.LightGray)
+                                        Text("Громкость ${(deck.gain * 100).toInt()}%", fontSize = 10.sp, color = Color.LightGray)
                                         Slider(value = deck.gain, onValueChange = { deck.gain = it; applyMix() })
                                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            FilledTonalButton(onClick = { if (deck.trackIndex >= 0) { if (deck.playing) { deck.player?.pause(); deck.playing = false } else { deck.player?.start(); deck.playing = true } } else if (selected >= 0) loadDeck(deck, selected) }, enabled = deck.trackIndex >= 0 || selected >= 0) { Text(if (deck.playing) "Пауза" else "Старт") }
-                                            FilledTonalButton(onClick = { deck.release(); message = "Плеер $label очищен" }) { Text("Стоп") }
+                                            FilledTonalButton(onClick = { if (deck.trackIndex >= 0) { if (deck.playing) { deck.player?.pause(); deck.playing = false } else { deck.player?.start(); deck.playing = true } } else if (selected >= 0) loadDeck(deck, selected) }, enabled = deck.trackIndex >= 0 || selected >= 0, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (deck.playing) "Пауза" else "Старт", fontSize = 11.sp) }
+                                            FilledTonalButton(onClick = { deck.release(); message = "Плеер $label очищен" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Стоп", fontSize = 11.sp) }
                                         }
-                                        TextButton(onClick = { if (selected >= 0) loadDeck(deck, selected) }, enabled = selected >= 0) { Text("Загрузить выбор") }
                                     }
                                 }
                             }
                         }
-                        Spacer(Modifier.height(14.dp))
-                        Card(colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(20.dp)) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text("КРОССФЕЙДЕР", color = neon, fontWeight = FontWeight.Bold)
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Плеер A", fontSize = 12.sp); Text("Плеер B", fontSize = 12.sp) }
+                        Spacer(Modifier.height(8.dp))
+                        Card(colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(16.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                Text("КРОССФЕЙДЕР", color = neon, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("A", fontSize = 11.sp); Text("B", fontSize = 11.sp) }
                                 Slider(value = cross, onValueChange = { cross = it; applyMix() })
-                                Text("Общая громкость", color = Color.LightGray, fontSize = 12.sp)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Общая громкость", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.weight(1f))
+                                    Text("${(master * 100).toInt()}%", fontSize = 11.sp, color = neon)
+                                }
                                 Slider(value = master, onValueChange = { master = it; applyMix() })
-                                Text(message, color = Color.LightGray, fontSize = 12.sp)
                             }
                         }
                         Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { musicPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.weight(1f)) { Text("＋ Музыка") }
-                            OutlinedButton(onClick = { stopAll() }, modifier = Modifier.weight(1f)) { Text("Остановить всё") }
+                        Button(onClick = { section = "Музыка" }, modifier = Modifier.fillMaxWidth()) {
+                            Text("♫  ОТКРЫТЬ МУЗЫКАЛЬНУЮ БИБЛИОТЕКУ")
                         }
                         Spacer(Modifier.height(8.dp))
-                        Text("Выбери песню для загрузки в плеер A или B", color = Color.LightGray, fontSize = 12.sp)
-                        LazyColumn(
-                            modifier = Modifier.weight(1f).fillMaxWidth(),
-                            contentPadding = PaddingValues(bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            itemsIndexed(tracks) { index, track ->
-                                Card(colors = CardDefaults.cardColors(containerColor = if (selected == index) Color(0xFF293C3A) else panel), modifier = Modifier.fillMaxWidth().clickable { selected = index }) {
-                                    Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Text(if (selected == index) "●" else "♫", color = neon)
-                                        Spacer(Modifier.width(10.dp))
-                                        Text(track.title, Modifier.weight(1f), maxLines = 1, fontSize = 13.sp)
-                                        TextButton(onClick = { loadDeck(deckA, index) }) { Text("A") }
-                                        TextButton(onClick = { loadDeck(deckB, index) }) { Text("B") }
-                                    }
-                                }
-                            }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { stopAll() }, modifier = Modifier.weight(1f)) { Text("Остановить всё") }
+                            OutlinedButton(onClick = { section = "Эффекты" }, modifier = Modifier.weight(1f)) { Text("Звуковые эффекты") }
                         }
+                        Spacer(Modifier.height(8.dp))
+                        Text(message, color = Color.LightGray, fontSize = 11.sp)
                     }
                     "Музыка" -> {
                         Button(onClick = { musicPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить песни с телефона") }
