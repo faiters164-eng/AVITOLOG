@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "AVITOLOG"
-include(":app")
+include(":app", ":dj")
