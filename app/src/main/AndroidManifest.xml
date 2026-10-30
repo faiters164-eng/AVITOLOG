@@ -3,6 +3,7 @@
     <application
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:label="АвитолоG"
+        android:icon="@drawable/ic_launcher"
         android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
