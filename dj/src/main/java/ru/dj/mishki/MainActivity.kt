@@ -24,12 +24,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
+private fun timeText(ms: Int): String {
+    val total = (ms.coerceAtLeast(0) / 1000)
+    return "%d:%02d".format(total / 60, total % 60)
+}
 private data class Track(val title: String, val uri: Uri)
 private class Deck {
     var player: MediaPlayer? = null
     var trackIndex by mutableIntStateOf(-1)
     var playing by mutableStateOf(false)
-    fun release() { runCatching { player?.stop(); player?.release() }; player = null; playing = false; trackIndex = -1 }
+    var position by mutableIntStateOf(0)
+    var duration by mutableIntStateOf(0)
+    var gain by mutableFloatStateOf(1f)
+    fun release() {
+        runCatching { player?.stop(); player?.release() }
+        player = null; playing = false; trackIndex = -1; position = 0; duration = 0
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -69,8 +79,8 @@ private fun DjMishkiApp() {
         }
     }
     fun applyMix() {
-        val a = master * (1f - cross)
-        val b = master * cross
+        val a = master * (1f - cross) * deckA.gain
+        val b = master * cross * deckB.gain
         runCatching { deckA.player?.setVolume(a, a) }
         runCatching { deckB.player?.setVolume(b, b) }
     }
@@ -83,8 +93,11 @@ private fun DjMishkiApp() {
                 setDataSource(context, tracks[index].uri)
                 setOnCompletionListener { deck.playing = false }
                 prepare()
+                deck.duration = duration
                 start()
             }
+            deck.duration = deck.player?.duration ?: 0
+            deck.position = 0
             deck.playing = true
             applyMix()
             message = "Загружено: ${tracks[index].title}"
@@ -108,7 +121,12 @@ private fun DjMishkiApp() {
                 tracks.add(Track(name, uri))
             }
         }
-        while (true) { delay(500); tick++ }
+        while (true) {
+            delay(400)
+            tick++
+            runCatching { if (deckA.playing) deckA.position = deckA.player?.currentPosition ?: 0 }
+            runCatching { if (deckB.playing) deckB.position = deckB.player?.currentPosition ?: 0 }
+        }
     }
     DisposableEffect(Unit) { onDispose { deckA.release(); deckB.release(); tone.release() } }
     val bg = Color(0xFF10121A); val panel = Color(0xFF1C2030); val neon = Color(0xFF55E6A5)
@@ -134,6 +152,16 @@ private fun DjMishkiApp() {
                                     Column(Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text("ПЛЕЕР $label", color = neon, fontWeight = FontWeight.Bold)
                                         Text(tracks.getOrNull(deck.trackIndex)?.title ?: "Не загружен", maxLines = 2, minLines = 2, fontSize = 13.sp)
+                                        Text("${timeText(deck.position)} / ${timeText(deck.duration)}", fontSize = 11.sp, color = Color.LightGray)
+                                        Slider(
+                                            value = if (deck.duration > 0) deck.position.toFloat().coerceIn(0f, deck.duration.toFloat()) else 0f,
+                                            onValueChange = { deck.position = it.toInt() },
+                                            onValueChangeFinished = { runCatching { deck.player?.seekTo(deck.position) } },
+                                            valueRange = 0f..(deck.duration.coerceAtLeast(1).toFloat()),
+                                            enabled = deck.trackIndex >= 0 && deck.duration > 0
+                                        )
+                                        Text("Громкость плеера ${(deck.gain * 100).toInt()}%", fontSize = 11.sp, color = Color.LightGray)
+                                        Slider(value = deck.gain, onValueChange = { deck.gain = it; applyMix() })
                                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                             FilledTonalButton(onClick = { if (deck.trackIndex >= 0) { if (deck.playing) { deck.player?.pause(); deck.playing = false } else { deck.player?.start(); deck.playing = true } } else if (selected >= 0) loadDeck(deck, selected) }, enabled = deck.trackIndex >= 0 || selected >= 0) { Text(if (deck.playing) "Пауза" else "Старт") }
                                             FilledTonalButton(onClick = { deck.release(); message = "Плеер $label очищен" }) { Text("Стоп") }
