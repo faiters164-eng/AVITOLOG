@@ -1,8 +1,8 @@
 package ru.dj.mishki
 
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
-import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -23,34 +23,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
-private fun timeText(ms: Int): String {
-    val total = (ms.coerceAtLeast(0) / 1000)
-    return "%d:%02d".format(total / 60, total % 60)
-}
 private data class Track(val title: String, val uri: Uri)
-private class Deck {
-    var player: MediaPlayer? = null
-    var trackIndex by mutableIntStateOf(-1)
-    var playing by mutableStateOf(false)
-    var position by mutableIntStateOf(0)
-    var duration by mutableIntStateOf(0)
-    var gain by mutableFloatStateOf(1f)
-    fun stopPlayback() {
-        runCatching { player?.stop(); player?.release() }
-        player = null
-        playing = false
-        position = 0
-    }
-    fun release() {
-        stopPlayback()
-        trackIndex = -1
-        duration = 0
-    }
+private fun timeText(ms: Int): String {
+    val s = ms.coerceAtLeast(0) / 1000
+    return "%d:%02d".format(s / 60, s % 60)
 }
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContent { DjMishkiApp() } }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { DjMishkiApp() }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -58,219 +43,322 @@ class MainActivity : ComponentActivity() {
 private fun DjMishkiApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("dj_mishki", 0) }
-    val tracks = remember { mutableStateListOf<Track>() }
+    val scope = rememberCoroutineScope()
+    val library = remember { mutableStateListOf<Track>() }
+    val queue = remember { mutableStateListOf<Track>() }
     val effects = remember { mutableStateListOf<Track>() }
     var section by remember { mutableStateOf("Пульт") }
-    var selected by remember { mutableIntStateOf(-1) }
-    var cross by remember { mutableFloatStateOf(0f) }
-    var master by remember { mutableFloatStateOf(0.85f) }
+    var current by remember { mutableStateOf<Track?>(null) }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var playing by remember { mutableStateOf(false) }
+    var position by remember { mutableIntStateOf(0) }
+    var duration by remember { mutableIntStateOf(0) }
+    var master by remember { mutableFloatStateOf(0.88f) }
+    var fadeSeconds by remember { mutableIntStateOf(5) }
+    var repeatQueue by remember { mutableStateOf(false) }
+    var shuffleQueue by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("Добавь музыку и сформируй очередь") }
     var tick by remember { mutableIntStateOf(0) }
-    var message by remember { mutableStateOf("Добавь музыку с телефона") }
-    val deckA = remember { Deck() }
-    val deckB = remember { Deck() }
     val tone = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 90) }
+    var advanceAction by remember { mutableStateOf<(Boolean) -> Unit>({}) }
+
+    fun releaseCurrent() {
+        runCatching { player?.setOnCompletionListener(null); player?.release() }
+        player = null
+        playing = false
+        position = 0
+        duration = 0
+    }
+
+    fun startTrack(track: Track, useFade: Boolean) {
+        scope.launch {
+            try {
+                val incoming = MediaPlayer()
+                incoming.setDataSource(context, track.uri)
+                incoming.setVolume(if (useFade && player != null) 0f else master, if (useFade && player != null) 0f else master)
+                incoming.prepare()
+                val outgoing = player
+                incoming.start()
+                player = incoming
+                current = track
+                duration = incoming.duration
+                position = 0
+                playing = true
+                if (useFade && outgoing != null) {
+                    val steps = (fadeSeconds * 10).coerceAtLeast(10)
+                    for (step in 0..steps) {
+                        val fraction = step.toFloat() / steps
+                        runCatching { incoming.setVolume(master * fraction, master * fraction) }
+                        runCatching { outgoing.setVolume(master * (1f - fraction), master * (1f - fraction)) }
+                        delay(100)
+                    }
+                    runCatching { outgoing.setOnCompletionListener(null); outgoing.release() }
+                } else {
+                    runCatching { outgoing?.setOnCompletionListener(null); outgoing?.release() }
+                    incoming.setVolume(master, master)
+                }
+                incoming.setOnCompletionListener { scope.launch { advanceAction(true) } }
+                message = "Сейчас играет: ${track.title}"
+            } catch (_: Exception) {
+                message = "Не удалось воспроизвести файл: ${track.title}"
+                playing = false
+            }
+        }
+    }
+
+    advanceAction = { automatic ->
+        if (queue.isEmpty() && repeatQueue && library.isNotEmpty()) {
+            queue.addAll(library)
+        }
+        if (queue.isNotEmpty()) {
+            val index = if (shuffleQueue) (0 until queue.size).random() else 0
+            val next = queue.removeAt(index)
+            startTrack(next, automatic || player != null)
+        } else {
+            playing = false
+        }
+    }
+
+    fun previousTrack() {
+        val active = player
+        if (active != null && runCatching { active.currentPosition > 3000 }.getOrDefault(false)) {
+            runCatching { active.seekTo(0) }
+            position = 0
+        } else if (queue.isNotEmpty()) {
+            current?.let { queue.add(0, it) }
+            val previous = queue.removeAt(queue.lastIndex)
+            startTrack(previous, player != null)
+        } else if (current != null) {
+            startTrack(current!!, false)
+        }
+    }
+
+    fun togglePlay() {
+        if (playing) {
+            runCatching { player?.pause() }
+            playing = false
+        } else if (player != null) {
+            runCatching { player?.start() }
+            playing = true
+        } else {
+            advanceAction(false)
+        }
+    }
+
     val musicPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { uri ->
             runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "Музыкальный файл"
-            if (tracks.none { it.uri == uri }) tracks.add(Track(name, uri))
+            val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            } ?: "Музыкальный файл"
+            if (library.none { it.uri == uri }) library.add(Track(name, uri))
         }
-        prefs.edit().putString("tracks", tracks.joinToString("|") { it.uri.toString() }).apply()
-        message = if (tracks.isEmpty()) "Добавь музыку с телефона" else "Добавлено песен: ${tracks.size}"
+        prefs.edit().putString("tracks", library.joinToString("|") { it.uri.toString() }).apply()
+        message = "В библиотеке песен: ${library.size}"
     }
     val effectPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { uri ->
             runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "Звуковой эффект"
-            if (effects.none { it.uri == uri }) effects.add(Track(name, uri))
+            val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            } ?: "Звуковой эффект"
+            effects.add(Track(name, uri))
         }
     }
-    fun applyMix() {
-        val a = master * (1f - cross) * deckA.gain
-        val b = master * cross * deckB.gain
-        runCatching { deckA.player?.setVolume(a, a) }
-        runCatching { deckB.player?.setVolume(b, b) }
-    }
-    fun loadDeck(deck: Deck, index: Int) {
-        if (index !in tracks.indices) return
-        deck.release()
-        runCatching {
-            deck.trackIndex = index
-            deck.player = MediaPlayer().apply {
-                setDataSource(context, tracks[index].uri)
-                setOnCompletionListener { deck.playing = false }
-                prepare()
-                deck.duration = duration
-                start()
-            }
-            deck.duration = deck.player?.duration ?: 0
-            deck.position = 0
-            deck.playing = true
-            applyMix()
-            message = "Загружено: ${tracks[index].title}"
-        }.onFailure { deck.release(); message = "Не удалось открыть файл. Попробуй другой формат." }
-    }
-    fun stopAll() { deckA.release(); deckB.release(); message = "Воспроизведение остановлено" }
-    fun playEffect(track: Track) {
-        runCatching {
-            val p = MediaPlayer()
-            p.setDataSource(context, track.uri)
-            p.setOnCompletionListener { it.release() }
-            p.prepare()
-            p.start()
-        }.onFailure { message = "Не удалось воспроизвести эффект" }
-    }
+
     LaunchedEffect(Unit) {
         prefs.getString("tracks", null)?.split("|")?.filter { it.isNotBlank() }?.forEach { raw ->
             runCatching {
                 val uri = Uri.parse(raw)
-                val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "Музыкальный файл"
-                tracks.add(Track(name, uri))
+                val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                } ?: "Музыкальный файл"
+                library.add(Track(name, uri))
             }
         }
         while (true) {
-            delay(400)
+            delay(350)
             tick++
-            runCatching { if (deckA.playing) deckA.position = deckA.player?.currentPosition ?: 0 }
-            runCatching { if (deckB.playing) deckB.position = deckB.player?.currentPosition ?: 0 }
+            runCatching { if (playing) position = player?.currentPosition ?: 0 }
         }
     }
-    DisposableEffect(Unit) { onDispose { deckA.release(); deckB.release(); tone.release() } }
-    val bg = Color(0xFF10121A); val panel = Color(0xFF1C2030); val neon = Color(0xFF55E6A5)
-    MaterialTheme(colorScheme = darkColorScheme(primary = neon, background = bg, surface = panel)) {
-        Scaffold(containerColor = bg, topBar = {
-            TopAppBar(title = { Column {
-                Text("DJ MISHKI", fontWeight = FontWeight.Black, color = neon, letterSpacing = 2.sp)
-                Text("Пульт управления мероприятием", fontSize = 11.sp, color = Color.LightGray)
-            } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = bg))
-        }, bottomBar = {
-            NavigationBar(containerColor = panel) {
-                listOf("Пульт", "Музыка", "Эффекты", "Игры").forEach { label ->
-                    NavigationBarItem(selected = section == label, onClick = { section = label }, icon = { Text(when(label) { "Пульт" -> "🎧"; "Музыка" -> "♫"; "Эффекты" -> "🔊"; else -> "🎮" }) }, label = { Text(label) })
+    DisposableEffect(Unit) {
+        onDispose { releaseCurrent(); tone.release() }
+    }
+
+    val bg = Color(0xFF070E1B)
+    val panel = Color(0xFF101D30)
+    val pink = Color(0xFFFF24B8)
+    val blue = Color(0xFF55B9FF)
+    MaterialTheme(colorScheme = darkColorScheme(primary = pink, secondary = blue, background = bg, surface = panel)) {
+        Scaffold(
+            containerColor = bg,
+            topBar = {
+                TopAppBar(
+                    title = { Column {
+                        Text("DJ MISHKI", color = pink, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+                        Text("Музыка для твоего праздника", color = Color.LightGray, fontSize = 11.sp)
+                    } },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = bg)
+                )
+            },
+            bottomBar = {
+                NavigationBar(containerColor = panel) {
+                    listOf("Пульт", "Музыка", "Эффекты", "Игры", "Настройки").forEach { label ->
+                        NavigationBarItem(
+                            selected = section == label,
+                            onClick = { section = label },
+                            icon = { Text(when (label) { "Пульт" -> "🎧"; "Музыка" -> "♫"; "Эффекты" -> "〰"; "Игры" -> "🎮"; else -> "⚙" }) },
+                            label = { Text(label, fontSize = 10.sp) }
+                        )
+                    }
                 }
             }
-        }) { pad ->
-            Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 14.dp, vertical = 10.dp)) {
-                when(section) {
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                when (section) {
                     "Пульт" -> {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("A" to deckA, "B" to deckB).forEach { (label, deck) ->
-                                Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(16.dp)) {
-                                    Column(Modifier.fillMaxWidth().padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("ПЛЕЕР $label", color = neon, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                        Text(tracks.getOrNull(deck.trackIndex)?.title ?: "Не загружен", maxLines = 1, fontSize = 11.sp)
-                                        Text("${timeText(deck.position)} / ${timeText(deck.duration)}", fontSize = 10.sp, color = Color.LightGray)
-                                        Slider(
-                                            value = if (deck.duration > 0) deck.position.toFloat().coerceIn(0f, deck.duration.toFloat()) else 0f,
-                                            onValueChange = { deck.position = it.toInt() },
-                                            onValueChangeFinished = { runCatching { deck.player?.seekTo(deck.position) } },
-                                            valueRange = 0f..deck.duration.coerceAtLeast(1).toFloat(),
-                                            enabled = deck.trackIndex >= 0 && deck.duration > 0
-                                        )
-                                        Text("Громкость ${(deck.gain * 100).toInt()}%", fontSize = 10.sp, color = Color.LightGray)
-                                        Slider(value = deck.gain, onValueChange = { deck.gain = it; applyMix() })
-                                        FilledTonalButton(
-                                            onClick = {
-                                                when {
-                                                    deck.playing -> {
-                                                        deck.player?.pause()
-                                                        deck.playing = false
-                                                    }
-                                                    deck.player != null -> {
-                                                        deck.player?.start()
-                                                        deck.playing = true
-                                                    }
-                                                    selected >= 0 -> loadDeck(deck, selected)
-                                                }
-                                            },
-                                            enabled = deck.trackIndex >= 0 || selected >= 0,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                                        ) {
-                                            Text(if (deck.playing) "Ⅱ  Пауза" else "▶  Плей", fontSize = 12.sp)
+                        Card(colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(22.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                                Text("СЕЙЧАС ИГРАЕТ", color = pink, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Spacer(Modifier.height(5.dp))
+                                Text(current?.title ?: "Выбери песню из очереди", fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                                Text(if (playing) "DJ MISHKI • Воспроизведение" else "DJ MISHKI • Пауза", color = Color.LightGray, fontSize = 12.sp)
+                                Spacer(Modifier.height(12.dp))
+                                Slider(
+                                    value = if (duration > 0) position.toFloat().coerceIn(0f, duration.toFloat()) else 0f,
+                                    onValueChange = { position = it.toInt() },
+                                    onValueChangeFinished = { runCatching { player?.seekTo(position) } },
+                                    valueRange = 0f..duration.coerceAtLeast(1).toFloat(),
+                                    enabled = player != null && duration > 0
+                                )
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text(timeText(position), color = Color.LightGray, fontSize = 12.sp)
+                                    Text(timeText(duration), color = Color.LightGray, fontSize = 12.sp)
+                                }
+                                Spacer(Modifier.height(10.dp))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                                    FilledTonalButton(onClick = { previousTrack() }) { Text("⏮") }
+                                    Button(onClick = { togglePlay() }, modifier = Modifier.height(58.dp)) {
+                                        Text(if (playing) "Ⅱ  ПАУЗА" else "▶  ПЛЕЙ", fontWeight = FontWeight.Bold)
+                                    }
+                                    FilledTonalButton(onClick = { advanceAction(false) }, enabled = queue.isNotEmpty()) { Text("⏭") }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("🔊", fontSize = 16.sp)
+                                    Slider(value = master, onValueChange = {
+                                        master = it
+                                        runCatching { player?.setVolume(master, master) }
+                                    }, modifier = Modifier.weight(1f))
+                                    Text("${(master * 100).toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Card(colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(16.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                Text("ПЛАВНОЕ ПЕРЕКЛЮЧЕНИЕ", color = blue, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("Затухание текущей и нарастание следующей песни", color = Color.LightGray, fontSize = 11.sp)
+                                Spacer(Modifier.height(7.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf(3, 5, 8, 10).forEach { seconds ->
+                                        FilterChip(selected = fadeSeconds == seconds, onClick = { fadeSeconds = seconds }, label = { Text("$seconds сек.") })
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Очередь воспроизведения (${queue.size})", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { shuffleQueue = !shuffleQueue }) { Text(if (shuffleQueue) "🔀 Вкл." else "🔀 Перемешать") }
+                            TextButton(onClick = { repeatQueue = !repeatQueue }) { Text(if (repeatQueue) "🔁 Вкл." else "🔁 Повтор") }
+                        }
+                        if (queue.isEmpty()) {
+                            Text("Очередь пока пуста. Добавь песни во вкладке «Музыка».", color = Color.LightGray, fontSize = 12.sp)
+                        } else {
+                            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                itemsIndexed(queue) { index, track ->
+                                    Card(colors = CardDefaults.cardColors(containerColor = if (index == 0) Color(0xFF321638) else panel), shape = RoundedCornerShape(12.dp)) {
+                                        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Text("${index + 1}", color = pink, fontWeight = FontWeight.Bold)
+                                            Spacer(Modifier.width(10.dp))
+                                            Text(track.title, Modifier.weight(1f), maxLines = 2, fontSize = 13.sp)
+                                            TextButton(onClick = { queue.removeAt(index) }) { Text("✕") }
                                         }
                                     }
                                 }
                             }
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Card(colors = CardDefaults.cardColors(containerColor = panel), shape = RoundedCornerShape(16.dp)) {
-                            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                Text("КРОССФЕЙДЕР", color = neon, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("A", fontSize = 11.sp); Text("B", fontSize = 11.sp) }
-                                Slider(value = cross, onValueChange = { cross = it; applyMix() })
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("Общая громкость", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.weight(1f))
-                                    Text("${(master * 100).toInt()}%", fontSize = 11.sp, color = neon)
-                                }
-                                Slider(value = master, onValueChange = { master = it; applyMix() })
-                            }
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Button(onClick = { section = "Музыка" }, modifier = Modifier.fillMaxWidth()) {
-                            Text("♫  ОТКРЫТЬ МУЗЫКАЛЬНУЮ БИБЛИОТЕКУ")
-                        }
-                        Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { stopAll() }, modifier = Modifier.weight(1f)) { Text("Остановить всё") }
-                            OutlinedButton(onClick = { section = "Эффекты" }, modifier = Modifier.weight(1f)) { Text("Звуковые эффекты") }
+                            Button(onClick = { section = "Музыка" }, modifier = Modifier.weight(1f)) { Text("＋ Добавить песни") }
+                            OutlinedButton(onClick = { queue.clear(); message = "Очередь очищена" }, modifier = Modifier.weight(1f)) { Text("Очистить") }
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Text(message, color = Color.LightGray, fontSize = 11.sp)
+                        Text(message, color = Color.LightGray, fontSize = 10.sp, modifier = Modifier.padding(top = 5.dp))
                     }
                     "Музыка" -> {
                         Button(onClick = { musicPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить песни с телефона") }
                         Spacer(Modifier.height(8.dp))
-                        Text("Песен в библиотеке: ${tracks.size}", color = neon)
+                        Text("Музыкальная библиотека • ${library.size} песен", color = blue, fontWeight = FontWeight.Bold)
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            itemsIndexed(tracks) { i, t ->
+                            itemsIndexed(library) { index, track ->
                                 Card(colors = CardDefaults.cardColors(containerColor = panel)) {
-                                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Text(t.title, Modifier.weight(1f), maxLines = 2)
-                                        TextButton(onClick = { selected = i; loadDeck(deckA, i) }) { Text("В A") }
-                                        TextButton(onClick = { selected = i; loadDeck(deckB, i) }) { Text("В B") }
-                                        TextButton(onClick = { tracks.removeAt(i); prefs.edit().putString("tracks", tracks.joinToString("|") { it.uri.toString() }).apply(); if (deckA.trackIndex == i) deckA.release(); if (deckB.trackIndex == i) deckB.release() }) { Text("Удалить") }
+                                    Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(track.title, Modifier.weight(1f), maxLines = 2, fontSize = 13.sp)
+                                        TextButton(onClick = { queue.add(track); message = "Добавлено в очередь: ${track.title}"; section = "Пульт" }) { Text("В очередь") }
+                                        TextButton(onClick = {
+                                            library.removeAt(index)
+                                            prefs.edit().putString("tracks", library.joinToString("|") { it.uri.toString() }).apply()
+                                            message = "Удалено из библиотеки"
+                                        }) { Text("✕") }
                                     }
                                 }
                             }
                         }
                     }
                     "Эффекты" -> {
-                        Text("ЗВУКОВАЯ ПАНЕЛЬ", color = neon, fontWeight = FontWeight.Bold)
-                        Text("Встроенные сигналы", color = Color.LightGray, fontSize = 12.sp)
-                        Spacer(Modifier.height(8.dp))
-                        val built = listOf("Старт" to ToneGenerator.TONE_PROP_BEEP, "Внимание" to ToneGenerator.TONE_PROP_PROMPT, "Подтверждение" to ToneGenerator.TONE_PROP_ACK, "Сигнал" to ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, "Оповещение" to ToneGenerator.TONE_CDMA_NETWORK_BUSY, "Победа" to ToneGenerator.TONE_CDMA_ALERT_INCALL_LITE)
+                        Text("ЗВУКОВЫЕ ЭФФЕКТЫ", color = pink, fontWeight = FontWeight.Bold)
+                        val built = listOf("Старт" to ToneGenerator.TONE_PROP_BEEP, "Внимание" to ToneGenerator.TONE_PROP_PROMPT, "Подтверждение" to ToneGenerator.TONE_PROP_ACK, "Сигнал" to ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, "Победа" to ToneGenerator.TONE_CDMA_ALERT_INCALL_LITE)
                         built.chunked(2).forEach { row ->
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                row.forEach { (title, id) -> Button(onClick = { tone.startTone(id, 650) }, modifier = Modifier.weight(1f).height(62.dp)) { Text(title) } }
+                                row.forEach { (name, id) -> Button(onClick = { tone.startTone(id, 650) }, modifier = Modifier.weight(1f)) { Text(name) } }
                                 if (row.size == 1) Spacer(Modifier.weight(1f))
                             }
-                            Spacer(Modifier.height(6.dp))
                         }
-                        Button(onClick = { effectPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить свои звуковые эффекты") }
-                        Spacer(Modifier.height(8.dp))
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            itemsIndexed(effects) { i, effect ->
+                        Button(onClick = { effectPicker.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) { Text("＋ Добавить свои эффекты") }
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            itemsIndexed(effects) { index, effect ->
                                 Card(colors = CardDefaults.cardColors(containerColor = panel)) {
-                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Row(Modifier.fillMaxWidth().padding(9.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Text(effect.title, Modifier.weight(1f))
-                                        Button(onClick = { playEffect(effect) }) { Text("▶ Играть") }
-                                        TextButton(onClick = { effects.removeAt(i) }) { Text("Убрать") }
+                                        Button(onClick = {
+                                            runCatching {
+                                                MediaPlayer().apply {
+                                                    setDataSource(context, effect.uri)
+                                                    setOnCompletionListener { it.release() }
+                                                    prepare()
+                                                    start()
+                                                }
+                                            }.onFailure { message = "Не удалось воспроизвести эффект" }
+                                        }) { Text("▶") }
+                                        TextButton(onClick = { effects.removeAt(index) }) { Text("Убрать") }
                                     }
                                 }
                             }
                         }
                     }
-                    else -> {
-                        Text("ИГРЫ И ИНТЕРАКТИВЫ", color = neon, fontWeight = FontWeight.Bold)
-                        Text("Выбери конкурс — приложение запустит таймер и поможет вести раунд.", color = Color.LightGray, fontSize = 12.sp)
+                    "Игры" -> {
                         var seconds by remember { mutableIntStateOf(15) }
                         var remaining by remember { mutableIntStateOf(15) }
                         var running by remember { mutableStateOf(false) }
-                        LaunchedEffect(running, tick) { if (running && tick % 2 == 0 && remaining > 0) remaining--; if (remaining == 0) running = false }
+                        LaunchedEffect(running, tick) {
+                            if (running && tick % 3 == 0 && remaining > 0) remaining--
+                            if (remaining == 0) running = false
+                        }
+                        Text("ИГРЫ И ИНТЕРАКТИВЫ", color = pink, fontWeight = FontWeight.Bold)
                         Card(colors = CardDefaults.cardColors(containerColor = panel), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("ТАЙМЕР КОНКУРСА", color = neon, fontWeight = FontWeight.Bold)
+                                Text("ТАЙМЕР КОНКУРСА", color = blue, fontWeight = FontWeight.Bold)
                                 Text("$remaining сек.", fontSize = 38.sp, fontWeight = FontWeight.Black)
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     TextButton(onClick = { seconds = (seconds - 5).coerceAtLeast(5); remaining = seconds }) { Text("−5") }
@@ -288,6 +376,13 @@ private fun DjMishkiApp() {
                                 Text(title, Modifier.padding(14.dp), fontWeight = FontWeight.SemiBold)
                             }
                         }
+                    }
+                    else -> {
+                        Text("НАСТРОЙКИ", color = pink, fontWeight = FontWeight.Bold)
+                        Text("Плавное переключение: $fadeSeconds секунд", color = Color.LightGray)
+                        Text("Повтор очереди: ${if (repeatQueue) "включён" else "выключен"}", color = Color.LightGray)
+                        Text("Перемешивание: ${if (shuffleQueue) "включено" else "выключено"}", color = Color.LightGray)
+                        OutlinedButton(onClick = { releaseCurrent(); queue.clear(); message = "Плеер очищен" }) { Text("Сбросить плеер") }
                     }
                 }
             }
