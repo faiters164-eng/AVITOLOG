@@ -158,8 +158,8 @@ fun AvitologApp(sharedUrl: String?, onShareConsumed: () -> Unit, openExternal: (
                       const categories = new Set(itemLinks.map(h => h.split('?')[0].split('/').filter(Boolean).slice(-2,-1)[0]).filter(Boolean));
                       const countMatches = [...body.matchAll(/(\\d[\\d\\s]*)\\s*(?:активн\\w*\\s*)?объявлен/gi)];
                       const activeCount = countMatches.length ? Math.max(...countMatches.map(m => parseInt(m[1].replace(/\\s/g,''),10) || 0)) : profileCards.length;
-                      const business = /\\b(магазин|компания)\\b/.test(body) && !/частное лицо/.test(body);
-                      const typeBusiness = /профиль компании|тип профиля.{0,20}(компания|магазин)|\\bмагазин\\b/.test(body);
+                      const business = /профиль компании|магазин на авито|страница магазина|тип профиля.{0,25}(компания|магазин)|компания на авито/.test(body);
+                      const typeBusiness = /профиль компании|магазин на авито|страница магазина|тип профиля.{0,25}(компания|магазин)|компания на авито/.test(body);
                       const diversified = activeCount >= 40 && categories.size >= 3;
                       return {business: business || typeBusiness, activeCount, categoryCount: categories.size, diversified};
                     });
